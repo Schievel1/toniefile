@@ -10,7 +10,7 @@ use std::io::Cursor;
 use toniehead::TonieboxAudioFileHeader;
 use anyhow::Result; // TODO remove later on an do some proper error handling
 use anyhow::anyhow;
-use byteorder::{LittleEndian, ByteOrder};
+use byteorder::{LittleEndian, ByteOrder, BigEndian};
 
 const OPUS_FRAME_SIZE_MS: u32 = 60;
 const OPUS_FRAME_SIZE_MS_OPUS: i32 = 5006;
@@ -24,6 +24,10 @@ const OPUS_PACKET_MINSIZE: usize = 64;
 const TONIEFILE_FRAME_SIZE: usize = 4096;
 const TONIEFILE_MAX_CHAPTERS: usize = 100;
 const TONIEFILE_PAD_END: usize = 64;
+const CONTENT_LENGTH_MAX: i32 = i32::MAX;
+const TONIE_LENGTH_MAX: i32 =  CONTENT_LENGTH_MAX - 0x1000;
+
+const SHA1_DIGEST_SIZE: usize = 160;
 
 pub mod toniehead {
     include!(concat!(env!("OUT_DIR"), "/toniehead.rs"));
@@ -56,15 +60,48 @@ impl Toniefile {
         buffer.extend(&len_bf);
         buffer.extend(comment.bytes());
     }
-    pub fn header(&mut self, buf: &[u8], taf_header: &TonieboxAudioFileHeader) {
-        todo!();
+    /// serializes the header to vector pointed to by buf
+    /// Toniefileheaders must be exactly 4092 bytes long. This function
+    /// creates a header of the correct size by filling the fill field of the
+    /// protobuf
+    /// returns the length of the serialized header
+    pub fn header(&mut self, buf: &mut Vec<u8>) -> usize {
+        let proto_frame_size : i16 = TONIEFILE_FRAME_SIZE as i16 - 4;
+
+        self.header.sha1_hash = vec![0xFFu8; SHA1_DIGEST_SIZE];
+
+        let mut data_length = self.header.encoded_len();
+        self.header.fill = vec![0u8; proto_frame_size as usize - data_length - 1]; // NOTE -1 because byte 0 of fill
+        data_length = self.header.encoded_len();
+
+        self.header.encode(buf).expect("Could not encode header");
+        data_length
     }
+
+    /// write header to file
     pub fn write_header(&mut self) {
-        todo!();
+        let mut buffer = vec![];
+        let mut len_bf = [0u8;4];
+
+        let proto_size = self.header(&mut buffer);
+        BigEndian::write_u32(&mut len_bf, proto_size as u32); // TODO can't we inline this?
+
+        self.file.seek(SeekFrom::Start(0)).expect("Could not seek to header");
+        self.file.write_all(&len_bf).expect("Could not write header size");
+
+        self.file.seek(SeekFrom::Start(4)).expect("Could not seek to header"); // TODO is this necessary?
+        println!("buffer: {:?}", buffer);
+        self.file.write_all(&buffer).expect("Could not write header");
     }
+
+    /// Create a new Toniefile at path with ogg audio stream id audio_id with
+    /// header prefilled and first two ogg pages header and comments written
+    /// returns a Toniefile struct if successful
     pub fn create(path: &str, audio_id: u32) -> Result<Toniefile> {
         let header = TonieboxAudioFileHeader {
             audio_id,
+            num_bytes: TONIE_LENGTH_MAX as u64,
+            track_page_nums: vec![0u32; TONIEFILE_MAX_CHAPTERS],
             ..Default::default()
         };
         let mut toniefile = Toniefile {
@@ -82,8 +119,9 @@ impl Toniefile {
             taf_block_number: 0,
             sha1: Sha1::new(),
         };
+        // toniefile.new_chapter(); // TODO
 
-        // write_header(&toniefile); // TODO
+        toniefile.write_header();
         toniefile.file.seek(SeekFrom::Start(TONIEFILE_FRAME_SIZE as u64)).expect("Could not seek to frame size");
 
         // opus settings
@@ -174,7 +212,7 @@ mod tests {
             get_test_path().join("test.tonie").to_str().unwrap(),
             0x12345678,
         );
-        println!("{:x?}", toniefile);
+        // println!("{:x?}", toniefile);
         assert!(toniefile.is_ok());
     }
 }

@@ -50,8 +50,11 @@ struct Toniefile {
 }
 
 impl Toniefile {
-    pub fn comment_add(&mut self, comment: &str) {
-        todo!();
+    pub fn comment_add(&mut self, buffer: &mut Vec<u8>, comment: &str) {
+        let mut len_bf = [0u8;4];
+        LittleEndian::write_u32(&mut len_bf, comment.len() as u32);
+        buffer.extend(&len_bf);
+        buffer.extend(comment.bytes());
     }
     pub fn header(&mut self, buf: &[u8], taf_header: &TonieboxAudioFileHeader) {
         todo!();
@@ -99,15 +102,12 @@ impl Toniefile {
         ];
         let mut opus_tags: Vec<u8> = Vec::with_capacity(0x1B4);
         opus_tags.extend(b"OpusTags");
-        let vendor_str = format!("toniefile {}", std::env!("CARGO_PKG_VERSION"));
-        let mut len_bf = [0u8;4];
-        LittleEndian::write_u32(&mut len_bf, vendor_str.len() as u32);
-        opus_tags.extend(&len_bf);
-        opus_tags.extend(vendor_str.bytes());
+        toniefile.comment_add(&mut opus_tags, &format!("toniefile {}", std::env!("CARGO_PKG_VERSION")));
         // TODO add some opus user comments here
 
         // add padding of the first block
         let padding_str = "pad=";
+        let mut len_bf = [0u8;4];
         LittleEndian::write_u32(&mut len_bf, (opus_tags.capacity() - opus_tags.len() - 4) as u32);
         opus_tags.extend(&len_bf);
         opus_tags.extend(padding_str.bytes());

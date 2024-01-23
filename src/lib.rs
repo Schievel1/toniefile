@@ -51,6 +51,7 @@ struct Toniefile {
     header: TonieboxAudioFileHeader,
     sha1: Sha1,
     taf_block_number: u32,
+    n_taf_blocks: usize,
 }
 
 impl Toniefile {
@@ -90,7 +91,6 @@ impl Toniefile {
         self.file.write_all(&len_bf).expect("Could not write header size");
 
         self.file.seek(SeekFrom::Start(4)).expect("Could not seek to header"); // TODO is this necessary?
-        println!("buffer: {:?}", buffer);
         self.file.write_all(&buffer).expect("Could not write header");
     }
 
@@ -117,9 +117,10 @@ impl Toniefile {
             ogg_packet_count: 0,
             header,
             taf_block_number: 0,
+            n_taf_blocks: 0,
             sha1: Sha1::new(),
         };
-        // toniefile.new_chapter(); // TODO
+        toniefile.new_chapter();
 
         toniefile.write_header();
         toniefile.file.seek(SeekFrom::Start(TONIEFILE_FRAME_SIZE as u64)).expect("Could not seek to frame size");
@@ -183,12 +184,23 @@ impl Toniefile {
         Ok(toniefile)
 
     }
+
     pub fn close(&mut self) {
         todo!();
     }
-    pub fn new_chapter(&mut self) {
-        todo!();
+
+    pub fn new_chapter(&mut self) -> Result<()> {
+        if self.header.track_page_nums.len() > TONIEFILE_MAX_CHAPTERS {
+            return Err(anyhow!("Maximum number of chapters reached"));
+        }
+
+        self.header.track_page_nums[self.n_taf_blocks] = self.taf_block_number;
+        self.n_taf_blocks += 1;
+        println!("new chapter at {:x}", self.taf_block_number);
+
+        Ok(())
     }
+
     pub fn encode(&mut self, sample_buf: &[i16], samples_available: usize) {
         todo!();
     }

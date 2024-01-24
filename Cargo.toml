@@ -7,8 +7,9 @@ edition = "2021"
 
 [dependencies]
 sha1 = "0.10.6"
+# audiopus = { git = "https://github.com/Lakelezz/audiopus" }
 audiopus = "^0.2"
-libogg = { git = "https://github.com/hatzel/libogg-rs" }
+libogg = { git = "https://github.com/Schievel1/libogg-rs" }
 prost = "0.6"
 # Only necessary if using Protobuf well-known types:
 prost-types = "0.6"

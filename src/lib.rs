@@ -8,6 +8,7 @@ use sha1::digest::FixedOutputReset;
 use sha1::{Digest, Sha1};
 use std::error::Error;
 use std::ffi::CStr;
+use std::io::{Cursor, Read};
 use std::{
     fs::File,
     io::{Seek, SeekFrom, Write},
@@ -62,9 +63,8 @@ pub mod toniehead {
 }
 
 #[derive(Debug)]
-pub struct Toniefile {
-    pub path: String,
-    file: File,
+pub struct Toniefile<F: Write + Seek> {
+    writer: F,
     file_position: u64,
     audio_length: u32,
     // opus
@@ -81,27 +81,21 @@ pub struct Toniefile {
     taf_block_number: u32,
 }
 
-impl Toniefile {
-    /// Add a comment to the opus tags
-    pub fn comment_add(
-        &mut self,
-        buffer: &mut Vec<u8>,
-        comment: &str,
-    ) -> Result<(), Box<dyn Error>> {
-        if comment.len() + buffer.len() > COMMENT_LEN {
-            return Err(Box::new(ToniefileError::CommentWontFit(
-                comment.len(),
-                buffer.len(),
-                COMMENT_LEN,
-            )));
-        }
-
+impl Toniefile<File> {
+    /// Parse the header of a Toniefile and return it
+    /// Usage:
+    /// ```
+    ///
+    pub fn parse_header<R: Read>(mut reader: R) -> Result<TonieboxAudioFileHeader, Box<dyn Error>> {
         let mut len_bf = [0u8; 4];
-        LittleEndian::write_u32(&mut len_bf, comment.len() as u32);
-        buffer.extend(&len_bf);
-        buffer.extend(comment.bytes());
-        Ok(())
+        reader.read_exact(&mut len_bf)?;
+        let proto_size = BigEndian::read_u32(&len_bf) as usize;
+        let mut buffer = vec![0u8; proto_size];
+        reader.read_exact(&mut buffer)?;
+        let header = TonieboxAudioFileHeader::decode(&mut Cursor::new(buffer))?;
+        Ok(header)
     }
+
     /// serializes the header to vector pointed to by buf
     /// Toniefileheaders must be exactly 4092 bytes long. This function
     /// creates a header of the correct size by filling the fill field of the
@@ -137,22 +131,23 @@ impl Toniefile {
         let proto_size = self.header(&mut buffer)?;
         BigEndian::write_u32(&mut len_bf, proto_size as u32); // TODO can't we inline this?
 
-        self.file.seek(SeekFrom::Start(0))?;
-        self.file.write_all(&len_bf)?;
+        self.writer.seek(SeekFrom::Start(0))?;
+        self.writer.write_all(&len_bf)?;
 
-        self.file.seek(SeekFrom::Start(4))?;
-        self.file.write_all(&buffer)?;
+        self.writer.seek(SeekFrom::Start(4))?;
+        self.writer.write_all(&buffer)?;
         Ok(())
     }
 
-    /// Create a new Toniefile at path with ogg audio stream id audio_id with
+    /// Create a new Toniefile with ogg audio stream id audio_id with
     /// header prefilled and first two ogg pages header and comments written
+    ///
     /// returns a Toniefile struct if successful
-    pub fn create(
-        path: &str,
+    pub fn new(
+        writer: File,
         audio_id: u32,
         user_comment: &str,
-    ) -> Result<Toniefile, Box<dyn Error>> {
+    ) -> Result<Toniefile<File>, Box<dyn Error>> {
         let header = TonieboxAudioFileHeader {
             audio_id,
             num_bytes: TONIE_LENGTH_MAX as u64,
@@ -161,8 +156,7 @@ impl Toniefile {
         };
 
         let mut toniefile = Toniefile {
-            path: path.to_string(),
-            file: File::create(path)?,
+            writer,
             file_position: 0,
             audio_length: 0,
             opus_encoder: OpusEnc::new(
@@ -183,7 +177,7 @@ impl Toniefile {
 
         toniefile.write_header()?;
         toniefile
-            .file
+            .writer
             .seek(SeekFrom::Start(TONIEFILE_FRAME_SIZE as u64))?; // seek after header
 
         // opus settings
@@ -256,8 +250,8 @@ impl Toniefile {
         toniefile.file_position = 0;
 
         while let Some(og) = toniefile.ogg_stream.flush() {
-            toniefile.file.write_all(&og.header)?;
-            toniefile.file.write_all(&og.body)?;
+            toniefile.writer.write_all(&og.header)?;
+            toniefile.writer.write_all(&og.body)?;
             toniefile.file_position += (og.header.len() + og.body.len()) as u64;
             toniefile.audio_length += (og.header.len() + og.body.len()) as u32;
 
@@ -268,19 +262,7 @@ impl Toniefile {
         Ok(toniefile)
     }
 
-    /// Finalize the toniefile by writing the last ogg page and the sha1 hash
-    /// in the header. This consumes the Toniefile struct and can therefore only
-    /// be called once
-    pub fn finalize(mut self) -> Result<(), Box<dyn Error>> {
-        self.file.flush()?;
-        self.header.sha1_hash = self.sha1.finalize_fixed_reset().to_vec();
-        self.header.num_bytes = self.audio_length as u64;
-
-        self.write_header()?;
-
-        Ok(())
-    }
-
+    /// Add a new chapter to the Toniefiles audio data
     pub fn new_chapter(&mut self) -> Result<(), Box<dyn Error>> {
         if self.header.track_page_nums.len() > TONIEFILE_MAX_CHAPTERS {
             return Err(Box::new(ToniefileError::MaxChaptersReached));
@@ -289,6 +271,11 @@ impl Toniefile {
         Ok(())
     }
 
+    /// Encode data into the Toniefile. This can either be called once with a single buffer of
+    /// samples or multiple times with smaller buffers. In the latter case the buffers will be appended
+    /// to the file.
+    /// The samples must be interleaved and in the order left, right, left, right, ...
+    /// The samples must be 16bit signed integers.
     pub fn encode(&mut self, sample_buf: &[i16]) -> Result<(), Box<dyn Error>> {
         // TODO get rid of samples available, use sample_buf.len()
         const PAGE_HEADER_SIZE: i64 = 27;
@@ -392,8 +379,8 @@ impl Toniefile {
                 }
 
                 while let Some(og) = self.ogg_stream.flush() {
-                    self.file.write_all(&og.header)?;
-                    self.file.write_all(&og.body)?;
+                    self.writer.write_all(&og.header)?;
+                    self.writer.write_all(&og.body)?;
                     let prev = self.file_position;
                     self.file_position += (og.header.len() + og.body.len()) as u64;
                     self.audio_length += (og.header.len() + og.body.len()) as u32;
@@ -416,6 +403,35 @@ impl Toniefile {
             // fill again
             self.audio_frame_used = 0;
         }
+        Ok(())
+    }
+
+    /// Finalize the toniefile by writing the last ogg page and the sha1 hash
+    /// in the header. This consumes the Toniefile struct and can therefore only
+    /// be called once
+    pub fn finalize(mut self) -> Result<(), Box<dyn Error>> {
+        self.writer.flush()?;
+        self.header.sha1_hash = self.sha1.finalize_fixed_reset().to_vec();
+        self.header.num_bytes = self.audio_length as u64;
+
+        self.write_header()?;
+
+        Ok(())
+    }
+
+    fn comment_add(&mut self, buffer: &mut Vec<u8>, comment: &str) -> Result<(), Box<dyn Error>> {
+        if comment.len() + buffer.len() > COMMENT_LEN {
+            return Err(Box::new(ToniefileError::CommentWontFit(
+                comment.len(),
+                buffer.len(),
+                COMMENT_LEN,
+            )));
+        }
+
+        let mut len_bf = [0u8; 4];
+        LittleEndian::write_u32(&mut len_bf, comment.len() as u32);
+        buffer.extend(&len_bf);
+        buffer.extend(comment.bytes());
         Ok(())
     }
 }
@@ -442,19 +458,16 @@ mod tests {
 
     #[test]
     fn create_toniefile() {
-        let toniefile = Toniefile::create(
-            get_test_path().join("test.tonie").to_str().unwrap(),
-            0x12345678,
-            "",
-        );
-        // println!("{:x?}", toniefile.as_mut().unwrap().file.stream_position().unwrap());
+        let file = File::create(get_test_path().join("500304E0")).unwrap();
+        let toniefile = Toniefile::new(file, 0x12345678, "");
         assert!(toniefile.is_ok());
     }
 
     #[test]
     fn fill_single_buffer_toniefile() {
-        let mut toniefile = Toniefile::create(
-            get_test_path().join("500304E0").to_str().unwrap(),
+        let file = File::create(get_test_path().join("500304E0")).unwrap();
+        let mut toniefile = Toniefile::new (
+            file,
             0x12345678,
             "",
         )
@@ -464,28 +477,13 @@ mod tests {
         assert!(res.is_ok());
 
         toniefile.finalize().unwrap();
-
-        // let header_output_len = toniefile.header.num_bytes;
-        // let header_hash = toniefile.header.sha1_hash.clone();
-
-        // let mut output_file =
-        //     File::open(get_test_path().join("500304E0").to_str().unwrap()).unwrap();
-        // output_file.seek(SeekFrom::Start(0x1000)).unwrap();
-        // let mut output_buffer = vec![];
-        // output_file.read_to_end(&mut output_buffer).unwrap();
-
-        // let mut hasher = Sha1::new();
-        // hasher.update(&output_buffer);
-        // let hash = hasher.finalize().to_vec();
-
-        // assert_eq!(output_buffer.len(), header_output_len as usize);
-        // assert_eq!(hash, header_hash);
     }
 
     #[test]
     fn fill_small_buffers_toniefile() {
-        let mut toniefile = Toniefile::create(
-            get_test_path().join("500304E0").to_str().unwrap(),
+        let file = File::create(get_test_path().join("500304E0")).unwrap();
+        let mut toniefile = Toniefile::new(
+            file,
             0x12345678,
             "",
         )
@@ -498,21 +496,37 @@ mod tests {
         }
 
         toniefile.finalize().unwrap();
+    }
 
-        // let header_output_len = toniefile.header.num_bytes;
-        // let header_hash = toniefile.header.sha1_hash.clone();
+    #[test]
+    fn parse_header() {
+        fill_single_buffer_toniefile();
+        let header = Toniefile::parse_header(
+            File::open(get_test_path().join("500304E0").to_str().unwrap()).unwrap(),
+        );
+        assert!(header.is_ok());
+    }
 
-        // let mut output_file =
-        //     File::open(get_test_path().join("500304E0").to_str().unwrap()).unwrap();
-        // output_file.seek(SeekFrom::Start(0x1000)).unwrap();
-        // let mut output_buffer = vec![];
-        // output_file.read_to_end(&mut output_buffer).unwrap();
+    #[test]
+    fn header_is_correct() {
+        fill_single_buffer_toniefile();
+        let header = Toniefile::parse_header(
+            File::open(get_test_path().join("500304E0").to_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        let mut output_file =
+            File::open(get_test_path().join("500304E0").to_str().unwrap()).unwrap();
+        output_file.seek(SeekFrom::Start(0x1000)).unwrap();
+        let mut output_buffer = vec![];
+        output_file.read_to_end(&mut output_buffer).unwrap();
 
-        // let mut hasher = Sha1::new();
-        // hasher.update(&output_buffer);
-        // let hash = hasher.finalize().to_vec();
+        let mut hasher = Sha1::new();
+        hasher.update(&output_buffer);
+        let output_buffer_hash = hasher.finalize().to_vec();
 
-        // assert_eq!(output_buffer.len(), header_output_len as usize);
-        // assert_eq!(hash, header_hash);
+        let audio_id = LittleEndian::read_u32(&output_buffer[14..=17]);
+        assert_eq!(audio_id, header.audio_id);
+        assert_eq!(output_buffer.len(), header.num_bytes as usize);
+        assert_eq!(output_buffer_hash, header.sha1_hash);
     }
 }

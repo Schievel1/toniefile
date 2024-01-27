@@ -10,8 +10,8 @@
 //! ```ignore
 //! Address   Data                                               ASCII
 //! 00000000  00 00 0f fc 0a 14 04 ef  db a5 67 5d a9 a7 96 1e  |..........g]....|
-//! ^ The protobuf header (starts at 0x04) until 0x0FFF. 0x00 - 0x03 are the length
-//! * the header in bytes
+//! ^ The protobuf header (starts at 0x04) until 0x0FFF.
+//! * 0x00 - 0x03 are the length of the header in bytes
 //! 00001000  4f 67 67 53 00 02 00 00  00 00 00 00 00 00 78 56  |OggS..........xV|
 //! ^ Opus Header and Opus Comment until 0x11FF
 //! 00001200  4f 67 67 53 00 00 40 38  00 00 00 00 00 00 78 56  |OggS..@8......xV|
@@ -365,6 +365,11 @@ impl<F: Write + Seek> Toniefile<F> {
         for user_comment in user_comments {
             toniefile.comment_add(&mut tags_cursor, user_comment)?;
         }
+        if (tags_cursor.position() as usize) < COMMENT_LEN {
+            let mut len_bf = [0u8; 4];
+            LittleEndian::write_u32(&mut len_bf, COMMENT_LEN as u32 - tags_cursor.position() as u32 - 4);
+            let _ = tags_cursor.write(&len_bf)?;
+        }
 
         let mut header_packet = OggPacket::new(&opus_header);
         header_packet.set_bos(true);
@@ -608,7 +613,8 @@ impl<F: Write + Seek> Toniefile<F> {
 
     fn comment_add(&mut self, cursor: &mut Cursor<&mut [u8]>, comment: &str) -> Result<(), Box<dyn Error>> {
         const LENGTH_LEN: usize = 4; // length of the string length indicator
-        if comment.len() + cursor.position() as usize + LENGTH_LEN > COMMENT_LEN {
+        // need at least 2 * LENGTH_LEN, because we also need to write the length of the padding
+        if 2 * LENGTH_LEN + comment.len() + cursor.position() as usize > COMMENT_LEN {
             return Err(Box::new(ToniefileError::CommentWontFit(
                 comment.len(),
                 cursor.position() as usize,
@@ -619,7 +625,7 @@ impl<F: Write + Seek> Toniefile<F> {
         let mut len_bf = [0u8; 4];
         LittleEndian::write_u32(&mut len_bf, comment.len() as u32);
         let _ = cursor.write(&len_bf)?;
-        let _ =cursor.write(comment.as_bytes())?;
+        let _ = cursor.write(comment.as_bytes())?;
         Ok(())
     }
 
@@ -717,6 +723,21 @@ mod tests {
         let toniefile = Toniefile::new(file, 0x12345678, comments);
         assert!(toniefile.is_ok());
 
+    }
+    #[test]
+    fn comment_padding_len() {
+        let myvec: Vec<u8> = vec![];
+        let cursor = Cursor::new(myvec);
+        // this should result in a padding of 7 bytes
+        let comments = vec!["A"; 74]; // be aware that every comment adds 5 bytes to the header
+        let toniefile = Toniefile::new(cursor, 0x12345678, comments);
+        assert!(toniefile.is_ok());
+        let mut cursor = toniefile.unwrap().get_writer();
+        // so length should be written 11 bytes from the end (7 for the padding and 4 for the length itself)
+        cursor.seek(SeekFrom::Start(0x1200-0xB)).unwrap();
+        let buf = &mut [0u8; 1];
+        let _ = cursor.read_exact(buf);
+        assert_eq!(buf[0], 7);
     }
 
     #[test]

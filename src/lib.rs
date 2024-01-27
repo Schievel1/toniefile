@@ -37,7 +37,7 @@
 //!     let mut toniefile = Toniefile::new (
 //!         file,
 //!         0x12345678,
-//!         "",
+//!         Some(vec!["my comment", "another comment"])
 //!     )
 //!     .unwrap();
 //!
@@ -56,6 +56,8 @@
 //! ```
 //! It is also possible to call encode() multiple times with smaller buffers. This can be useful if you
 //! don't want to have the whole samples file in memory at once.
+//! We can use new_simple() to create a Toniefile with a random audio id and no user comments if we don't
+//! care about them.
 //! Here we use the WavReader from the hound crate (https://crates.io/crates/hound) to read the samples
 //! in chunks.
 //! ```ignore
@@ -95,7 +97,7 @@
 //! fn fill_vector_toniefile() {
 //!     let myvec: Vec<u8> = vec![];
 //!     let cursor = Cursor::new(myvec);
-//!     let mut toniefile = Toniefile::new(cursor, 0x12345678, vec![""]).unwrap();
+//!     let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
 //!     let samples: Vec<i16> = vec![0; 48000 * 2 * 60]; // 60 seconds of finest silence
 //!     let res = toniefile.encode(&samples);
 //!     assert!(res.is_ok());
@@ -197,7 +199,7 @@ impl Toniefile<File> {
     /// fn parse_my_header() {
     ///     let myvec: Vec<u8> = vec![];
     ///     let cursor = Cursor::new(myvec);
-    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, vec![""]).unwrap();
+    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, Some(Vec::new())).unwrap();
     ///     let samples: Vec<i16> = vec![0; 48000 * 2 * 60]; // 60 seconds of finest silence
     ///     let res = toniefile.encode(&samples);
     ///     assert!(res.is_ok());
@@ -229,7 +231,7 @@ impl Toniefile<File> {
     /// fn get_audio_data() {
     ///     let myvec: Vec<u8> = vec![];
     ///     let cursor = Cursor::new(myvec);
-    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, vec![""]).unwrap();
+    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, Some(Vec::new())).unwrap();
     ///     let samples: Vec<i16> = vec![0; 48000 * 2 * 60]; // 60 seconds of finest silence
     ///     let res = toniefile.encode(&samples);
     ///     assert!(res.is_ok());
@@ -272,7 +274,7 @@ impl<F: Write + Seek> Toniefile<F> {
     /// ```
     pub fn new_simple(writer: F) -> Result<Toniefile<F>, Box<dyn Error>> {
         let audio_id = rand::thread_rng().gen::<u32>();
-        Toniefile::new(writer, audio_id, vec![])
+        Toniefile::new(writer, audio_id, None)
     }
 
     /// Create a new Toniefile with ogg audio stream id audio_id,
@@ -290,14 +292,14 @@ impl<F: Write + Seek> Toniefile<F> {
     /// fn create_toniefile() {
     ///     let myvec: Vec<u8> = vec![];
     ///     let cursor = Cursor::new(myvec);
-    ///     let toniefile = Toniefile::new(cursor, 0x12345678, vec![""]);
+    ///     let toniefile = Toniefile::new(cursor, 0x12345678, Some(vec!["my comment", "another comment"]));
     ///     assert!(toniefile.is_ok());
     /// }
     /// ```
     pub fn new(
         writer: F,
         audio_id: u32,
-        user_comments: Vec<&str>,
+        user_comments: Option<Vec<&str>>,
     ) -> Result<Toniefile<F>, Box<dyn Error>> {
         let header = TonieboxAudioFileHeader {
             audio_id,
@@ -362,12 +364,17 @@ impl<F: Write + Seek> Toniefile<F> {
         // let libopusversion = format!("opus {}", audiopus::version()); // this is the libopus version not the audiopus version
         let libopusversion = unsafe { CStr::from_ptr(ffi::opus_get_version_string()) }.to_str()?;
         toniefile.comment_add(&mut tags_cursor, libopusversion)?;
-        for user_comment in user_comments {
-            toniefile.comment_add(&mut tags_cursor, user_comment)?;
+        if let Some(user_comments) = user_comments {
+            for user_comment in user_comments {
+                toniefile.comment_add(&mut tags_cursor, user_comment)?;
+            }
         }
         if (tags_cursor.position() as usize) < COMMENT_LEN {
             let mut len_bf = [0u8; 4];
-            LittleEndian::write_u32(&mut len_bf, COMMENT_LEN as u32 - tags_cursor.position() as u32 - 4);
+            LittleEndian::write_u32(
+                &mut len_bf,
+                COMMENT_LEN as u32 - tags_cursor.position() as u32 - 4,
+            );
             let _ = tags_cursor.write(&len_bf)?;
         }
 
@@ -411,7 +418,7 @@ impl<F: Write + Seek> Toniefile<F> {
     /// fn make_two_track_toniefile() {
     ///     let myvec: Vec<u8> = vec![];
     ///     let cursor = Cursor::new(myvec);
-    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, vec![""]).unwrap();
+    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
     ///     let samples: Vec<i16> = vec![0; 48000 * 2 * 60]; // 60 seconds of finest silence
     ///     let res = toniefile.encode(&samples);
     ///     assert!(res.is_ok());
@@ -611,9 +618,13 @@ impl<F: Write + Seek> Toniefile<F> {
         &self.header
     }
 
-    fn comment_add(&mut self, cursor: &mut Cursor<&mut [u8]>, comment: &str) -> Result<(), Box<dyn Error>> {
+    fn comment_add(
+        &mut self,
+        cursor: &mut Cursor<&mut [u8]>,
+        comment: &str,
+    ) -> Result<(), Box<dyn Error>> {
         const LENGTH_LEN: usize = 4; // length of the string length indicator
-        // need at least 2 * LENGTH_LEN, because we also need to write the length of the padding
+                                     // need at least 2 * LENGTH_LEN, because we also need to write the length of the padding
         if 2 * LENGTH_LEN + comment.len() + cursor.position() as usize > COMMENT_LEN {
             return Err(Box::new(ToniefileError::CommentWontFit(
                 comment.len(),
@@ -713,7 +724,7 @@ mod tests {
     fn create_toniefile() {
         let myvec: Vec<u8> = vec![];
         let cursor = Cursor::new(myvec);
-        let toniefile = Toniefile::new(cursor, 0x12345678, vec!["Hello World", "How are You"]);
+        let toniefile = Toniefile::new(cursor, 0x12345678, Some(vec!["Hello World", "How are You"]));
         assert!(toniefile.is_ok());
     }
 
@@ -722,9 +733,8 @@ mod tests {
         let myvec: Vec<u8> = vec![];
         let cursor = Cursor::new(myvec);
         let comments = vec!["A"; 75]; // be aware that every comment adds 5 bytes to the header
-        let toniefile = Toniefile::new(cursor, 0x12345678, comments);
+        let toniefile = Toniefile::new(cursor, 0x12345678, Some(comments));
         assert!(toniefile.is_ok());
-
     }
     #[test]
     fn comment_padding_len() {
@@ -732,11 +742,11 @@ mod tests {
         let cursor = Cursor::new(myvec);
         // this should result in a padding of 7 bytes
         let comments = vec!["A"; 74]; // be aware that every comment adds 5 bytes to the header
-        let toniefile = Toniefile::new(cursor, 0x12345678, comments);
+        let toniefile = Toniefile::new(cursor, 0x12345678, Some(comments));
         assert!(toniefile.is_ok());
         let mut cursor = toniefile.unwrap().get_writer();
         // so length should be written 11 bytes from the end (7 for the padding and 4 for the length itself)
-        cursor.seek(SeekFrom::Start(0x1200-0xB)).unwrap();
+        cursor.seek(SeekFrom::Start(0x1200 - 0xB)).unwrap();
         let buf = &mut [0u8; 1];
         let _ = cursor.read_exact(buf);
         assert_eq!(buf[0], 7);
@@ -748,14 +758,14 @@ mod tests {
         let myvec: Vec<u8> = vec![];
         let cursor = Cursor::new(myvec);
         let comments = vec!["A"; 76]; // be aware that every comment adds 5 bytes to the header
-        let toniefile = Toniefile::new(cursor, 0x12345678, comments);
+        let toniefile = Toniefile::new(cursor, 0x12345678, Some(comments));
         assert!(toniefile.is_ok());
     }
 
     #[test]
     fn fill_single_buffer_toniefile() {
         let file = File::create(get_test_path().join("500304E0")).unwrap();
-        let mut toniefile = Toniefile::new(file, 0x12345678, vec![""]).unwrap();
+        let mut toniefile = Toniefile::new(file, 0x12345678, None).unwrap();
         let samples: Vec<i16> = read_file_i16(get_test_path().join("1000hz.wav").to_str().unwrap());
         let res = toniefile.encode(&samples);
         assert!(res.is_ok());
@@ -769,7 +779,7 @@ mod tests {
     fn fill_vector_toniefile() {
         let myvec: Vec<u8> = vec![];
         let cursor = Cursor::new(myvec);
-        let mut toniefile = Toniefile::new(cursor, 0x12345678, vec![""]).unwrap();
+        let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
         let samples: Vec<i16> = read_file_i16(get_test_path().join("1000hz.wav").to_str().unwrap());
         let res = toniefile.encode(&samples);
         assert!(res.is_ok());
@@ -782,7 +792,7 @@ mod tests {
     fn fill_small_buffers_toniefile() {
         let myvec: Vec<u8> = vec![];
         let cursor = Cursor::new(myvec);
-        let mut toniefile = Toniefile::new(cursor, 0x12345678, vec![""]).unwrap();
+        let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
 
         let samples: Vec<i16> = read_file_i16(get_test_path().join("1000hz.wav").to_str().unwrap());
         for window in samples.chunks(TONIEFILE_FRAME_SIZE * OPUS_CHANNELS) {
@@ -798,7 +808,7 @@ mod tests {
     fn read_and_fill_chunks_toniefile() {
         let myvec: Vec<u8> = vec![];
         let cursor = Cursor::new(myvec);
-        let mut toniefile = Toniefile::new(cursor, 0x12345678, vec![""]).unwrap();
+        let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
 
         let mut f = File::open(get_test_path().join("1000hz.wav").to_str().unwrap()).unwrap();
         let mut wav_reader = hound::WavReader::new(&mut f).unwrap();
@@ -823,7 +833,7 @@ mod tests {
     fn header_is_correct() {
         let myvec: Vec<u8> = vec![];
         let cursor = Cursor::new(myvec);
-        let mut toniefile = Toniefile::new(cursor, 0x12345678, vec![""]).unwrap();
+        let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
         let samples: Vec<i16> = read_file_i16(get_test_path().join("1000hz.wav").to_str().unwrap());
         let res = toniefile.encode(&samples);
         assert!(res.is_ok());

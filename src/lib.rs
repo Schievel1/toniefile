@@ -32,7 +32,7 @@
 //! ```text
 //! fn fill_single_buffer_toniefile() {
 //!     // create a file
-//!     let file = File::new(~/my_little_toniefile").unwrap();
+//!     let file = File::create(~/my_little_toniefile").unwrap();
 //!     // create a toniefile struct
 //!     let mut toniefile = Toniefile::new (
 //!         file,
@@ -62,7 +62,7 @@
 //! in chunks.
 //! ```text
 //! fn read_and_fill_chunks_toniefile() {
-//!     let file = File::new_simple("~/my_little_toniefile").unwrap();
+//!     let file = File::create("~/my_little_toniefile").unwrap();
 //!     let mut toniefile = Toniefile::new_simple(file)
 //!     .unwrap();
 //!

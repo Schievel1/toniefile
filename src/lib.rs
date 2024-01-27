@@ -788,6 +788,26 @@ mod tests {
         toniefile.finalize_no_consume().unwrap();
         check_file_against_header(&mut toniefile.writer);
     }
+    #[test]
+    fn check_page_positions_toniefile() {
+        let myvec: Vec<u8> = vec![];
+        let cursor = Cursor::new(myvec);
+        let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
+        let samples: Vec<i16> = read_file_i16(get_test_path().join("1000hz.wav").to_str().unwrap());
+        let res = toniefile.encode(&samples);
+        assert!(res.is_ok());
+
+        toniefile.finalize_no_consume().unwrap();
+
+        let mut reader = toniefile.get_writer();
+        reader.seek(SeekFrom::Start(0x1000)).unwrap();
+        let mut output_buffer = vec![];
+        reader.read_to_end(&mut output_buffer).unwrap();
+
+        for window in output_buffer.chunks(TONIEFILE_FRAME_SIZE) {
+            assert!(window.starts_with(b"OggS"));
+        }
+    }
 
     #[test]
     fn fill_small_buffers_toniefile() {

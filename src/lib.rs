@@ -690,14 +690,25 @@ mod tests {
 
     use super::*;
 
-    fn get_test_path() -> PathBuf {
+    fn get_test_assets_path() -> PathBuf {
         let test_path = std::env!("CARGO_MANIFEST_DIR")
             .parse::<PathBuf>()
             .unwrap()
-            .join("test_assets");
+            .join("test/assets");
+        std::fs::create_dir_all(&test_path).unwrap();
+        test_path
+
+    }
+
+    fn get_test_out_path() -> PathBuf {
+        let test_path = std::env!("CARGO_MANIFEST_DIR")
+            .parse::<PathBuf>()
+            .unwrap()
+            .join("test/out");
         std::fs::create_dir_all(&test_path).unwrap();
         test_path
     }
+
     fn read_file_i16(path: &str) -> Vec<i16> {
         let mut f = File::open(path).expect("no file found");
         let (_, b) = wav::read(&mut f).unwrap();
@@ -765,14 +776,14 @@ mod tests {
 
     #[test]
     fn fill_single_buffer_toniefile() {
-        let file = File::create(get_test_path().join("500304E0")).unwrap();
+        let file = File::create(get_test_out_path().join("500304E0")).unwrap();
         let mut toniefile = Toniefile::new(file, 0x12345678, None).unwrap();
-        let samples: Vec<i16> = read_file_i16(get_test_path().join("1000hz.wav").to_str().unwrap());
+        let samples: Vec<i16> = read_file_i16(get_test_assets_path().join("1000hz.wav").to_str().unwrap());
         let res = toniefile.encode(&samples);
         assert!(res.is_ok());
 
         toniefile.finalize().unwrap();
-        let mut file = File::open(get_test_path().join("500304E0")).unwrap();
+        let mut file = File::open(get_test_out_path().join("500304E0")).unwrap();
         check_file_against_header(&mut file);
     }
 
@@ -781,7 +792,7 @@ mod tests {
         let myvec: Vec<u8> = vec![];
         let cursor = Cursor::new(myvec);
         let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
-        let samples: Vec<i16> = read_file_i16(get_test_path().join("1000hz.wav").to_str().unwrap());
+        let samples: Vec<i16> = read_file_i16(get_test_assets_path().join("1000hz.wav").to_str().unwrap());
         let res = toniefile.encode(&samples);
         assert!(res.is_ok());
 
@@ -793,7 +804,7 @@ mod tests {
         let myvec: Vec<u8> = vec![];
         let cursor = Cursor::new(myvec);
         let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
-        let samples: Vec<i16> = read_file_i16(get_test_path().join("1000hz.wav").to_str().unwrap());
+        let samples: Vec<i16> = read_file_i16(get_test_assets_path().join("1000hz.wav").to_str().unwrap());
         let res = toniefile.encode(&samples);
         assert!(res.is_ok());
 
@@ -815,7 +826,7 @@ mod tests {
         let cursor = Cursor::new(myvec);
         let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
 
-        let samples: Vec<i16> = read_file_i16(get_test_path().join("1000hz.wav").to_str().unwrap());
+        let samples: Vec<i16> = read_file_i16(get_test_assets_path().join("1000hz.wav").to_str().unwrap());
         for window in samples.chunks(TONIEFILE_FRAME_SIZE * OPUS_CHANNELS) {
             let res = toniefile.encode(window);
             assert!(res.is_ok());
@@ -831,7 +842,7 @@ mod tests {
         let cursor = Cursor::new(myvec);
         let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
 
-        let mut f = File::open(get_test_path().join("1000hz.wav").to_str().unwrap()).unwrap();
+        let mut f = File::open(get_test_assets_path().join("1000hz.wav").to_str().unwrap()).unwrap();
         let mut wav_reader = hound::WavReader::new(&mut f).unwrap();
         let total_samples = wav_reader.duration();
         let mut wav_iter = wav_reader.samples::<i16>();
@@ -855,7 +866,7 @@ mod tests {
         let myvec: Vec<u8> = vec![];
         let cursor = Cursor::new(myvec);
         let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
-        let samples: Vec<i16> = read_file_i16(get_test_path().join("1000hz.wav").to_str().unwrap());
+        let samples: Vec<i16> = read_file_i16(get_test_assets_path().join("1000hz.wav").to_str().unwrap());
         let res = toniefile.encode(&samples);
         assert!(res.is_ok());
 

@@ -160,6 +160,12 @@ pub enum ToniefileError {
     OpusEncoderError(#[from] audiopus::Error),
     #[error(transparent)]
     IOError(#[from] std::io::Error),
+    #[error(transparent)]
+    ProstEncodeError(#[from] prost::EncodeError),
+    #[error(transparent)]
+    ProstDecodeError(#[from] prost::DecodeError),
+    #[error(transparent)]
+    Utf8Error(#[from] std::str::Utf8Error),
 }
 
 pub mod toniehead {
@@ -208,7 +214,7 @@ impl Toniefile<File> {
     /// ```
     pub fn parse_header<R: Read + Seek>(
         reader: &mut R,
-    ) -> Result<TonieboxAudioFileHeader, Box<dyn Error>> {
+    ) -> Result<TonieboxAudioFileHeader, ToniefileError> {
         reader.rewind()?;
         let mut len_bf = [0u8; 4];
         reader.read_exact(&mut len_bf)?;
@@ -242,7 +248,7 @@ impl Toniefile<File> {
     /// }
     ///
     /// ```
-    pub fn extract_audio<R: Read + Seek>(reader: &mut R) -> Result<Vec<u8>, Box<dyn Error>> {
+    pub fn extract_audio<R: Read + Seek>(reader: &mut R) -> Result<Vec<u8>, ToniefileError> {
         const LEN_LENGTH: usize = 4;
         reader.rewind()?;
         let mut len_bf = [0u8; 4];
@@ -269,7 +275,7 @@ impl<F: Write + Seek> Toniefile<F> {
     ///     assert!(toniefile.is_ok());
     /// }
     /// ```
-    pub fn new_simple(writer: F) -> Result<Toniefile<F>, Box<dyn Error>> {
+    pub fn new_simple(writer: F) -> Result<Toniefile<F>, ToniefileError> {
         let audio_id = rand::thread_rng().gen::<u32>();
         Toniefile::new(writer, audio_id, None)
     }
@@ -299,7 +305,7 @@ impl<F: Write + Seek> Toniefile<F> {
         writer: F,
         audio_id: u32,
         user_comments: Option<Vec<&str>>,
-    ) -> Result<Toniefile<F>, Box<dyn Error>> {
+    ) -> Result<Toniefile<F>, ToniefileError> {
         let header = TonieboxAudioFileHeader {
             audio_id,
             num_bytes: TONIE_LENGTH_MAX as u64,
@@ -434,9 +440,9 @@ impl<F: Write + Seek> Toniefile<F> {
     /// }
     ///
     /// ```
-    pub fn new_chapter(&mut self) -> Result<(), Box<dyn Error>> {
+    pub fn new_chapter(&mut self) -> Result<(), ToniefileError> {
         if self.header.track_page_nums.len() > TONIEFILE_MAX_CHAPTERS {
-            return Err(Box::new(ToniefileError::MaxChaptersReached));
+            return Err(ToniefileError::MaxChaptersReached);
         }
         self.header.track_page_nums.push(self.taf_block_number);
         Ok(())
@@ -462,7 +468,7 @@ impl<F: Write + Seek> Toniefile<F> {
     ///
     ///     toniefile.finalize_no_consume().unwrap();
     /// }
-    pub fn encode(&mut self, sample_buf: &[i16]) -> Result<(), Box<dyn Error>> {
+    pub fn encode(&mut self, sample_buf: &[i16]) -> Result<(), ToniefileError> {
         // TODO get rid of samples available, use sample_buf.len()
         const PAGE_HEADER_SIZE: i64 = 27;
         let mut samples_processed = 0;
@@ -506,7 +512,7 @@ impl<F: Write + Seek> Toniefile<F> {
                 frame_payload -= OPUS_PACKET_MINSIZE as i64
             }
             if frame_payload < OPUS_PACKET_MINSIZE as i64 {
-                return Err(Box::new(ToniefileError::NotEnoughSpace));
+                return Err(ToniefileError::NotEnoughSpace);
             }
 
             let mut frame_len = self.opus_encoder.encode(
@@ -529,10 +535,10 @@ impl<F: Write + Seek> Toniefile<F> {
             let frames =
                 samples_per_frame(&output_frame[..], SampleRate::Hz48000)? * nb_frames as usize;
             if frames != OPUS_FRAME_SIZE {
-                return Err(Box::new(ToniefileError::FrameSizeDontMatch(
+                return Err(ToniefileError::FrameSizeDontMatch(
                     frames,
                     OPUS_FRAME_SIZE,
-                )));
+                ));
             }
             self.ogg_granulepos += frames as u64;
 
@@ -555,10 +561,10 @@ impl<F: Write + Seek> Toniefile<F> {
 
             if page_remain < TONIEFILE_PAD_END as i64 {
                 if page_remain > 0 {
-                    return Err(Box::new(ToniefileError::SmallPaddingError(
+                    return Err(ToniefileError::SmallPaddingError(
                         self.ogg_granulepos,
                         self.ogg_granulepos / OPUS_FRAME_SIZE as u64 * 60 / 1000,
-                    )));
+                    ));
                 }
 
                 while let Some(og) = self.ogg_stream.flush() {
@@ -576,9 +582,9 @@ impl<F: Write + Seek> Toniefile<F> {
                     {
                         self.taf_block_number += 1;
                         if self.file_position % TONIEFILE_FRAME_SIZE as u64 != 0 {
-                            return Err(Box::new(ToniefileError::BlockAlignmentError(
+                            return Err(ToniefileError::BlockAlignmentError(
                                 self.file_position,
-                            )));
+                            ));
                         }
                     }
                 }
@@ -609,7 +615,7 @@ impl<F: Write + Seek> Toniefile<F> {
     ///     // after finalize() toniefile is dropped
     /// }
     /// ```
-    pub fn finalize(mut self) -> Result<(), Box<dyn Error>> {
+    pub fn finalize(mut self) -> Result<(), ToniefileError> {
         self.writer.flush()?;
         self.header.sha1_hash = self.sha1.finalize_fixed_reset().to_vec();
         self.header.num_bytes = self.audio_length as u64;
@@ -643,7 +649,7 @@ impl<F: Write + Seek> Toniefile<F> {
     ///     assert_eq!(new_cursor.position(), 0);
     /// }
     /// ```
-    pub fn finalize_no_consume(&mut self) -> Result<(), Box<dyn Error>> {
+    pub fn finalize_no_consume(&mut self) -> Result<(), ToniefileError> {
         self.writer.flush()?;
         self.header.sha1_hash = self.sha1.finalize_fixed_reset().to_vec();
         self.header.num_bytes = self.audio_length as u64;
@@ -705,15 +711,15 @@ impl<F: Write + Seek> Toniefile<F> {
         &mut self,
         cursor: &mut Cursor<&mut [u8]>,
         comment: &str,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<(), ToniefileError> {
         const LENGTH_LEN: usize = 4; // length of the string length indicator
                                      // need at least 2 * LENGTH_LEN, because we also need to write the length of the padding
         if 2 * LENGTH_LEN + comment.len() + cursor.position() as usize > COMMENT_LEN {
-            return Err(Box::new(ToniefileError::CommentWontFit(
+            return Err(ToniefileError::CommentWontFit(
                 comment.len(),
                 cursor.position() as usize,
                 COMMENT_LEN,
-            )));
+            ));
         }
 
         let mut len_bf = [0u8; 4];
@@ -728,7 +734,7 @@ impl<F: Write + Seek> Toniefile<F> {
     // creates a header of the correct size by filling the fill field of the
     // protobuf
     // writes the header into buf and returns the length of the serialized header
-    fn header(&mut self, buf: &mut Vec<u8>) -> Result<usize, Box<dyn Error>> {
+    fn header(&mut self, buf: &mut Vec<u8>) -> Result<usize, ToniefileError> {
         let proto_frame_size: i16 = TONIEFILE_FRAME_SIZE as i16 - 4;
 
         // only fill the hash at the first time initializing the header
@@ -751,7 +757,7 @@ impl<F: Write + Seek> Toniefile<F> {
     }
 
     // write header to writer
-    fn write_header(&mut self) -> Result<(), Box<dyn Error>> {
+    fn write_header(&mut self) -> Result<(), ToniefileError> {
         let mut buffer = vec![];
         let mut len_bf = [0u8; 4];
 

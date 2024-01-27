@@ -711,16 +711,18 @@ mod tests {
 
     #[test]
     fn create_toniefile() {
-        let file = File::create(get_test_path().join("500304E0")).unwrap();
-        let toniefile = Toniefile::new(file, 0x12345678, vec!["Hello World", "How are You"]);
+        let myvec: Vec<u8> = vec![];
+        let cursor = Cursor::new(myvec);
+        let toniefile = Toniefile::new(cursor, 0x12345678, vec!["Hello World", "How are You"]);
         assert!(toniefile.is_ok());
     }
 
     #[test]
     fn just_enough_comments() {
-        let file = File::create(get_test_path().join("500304E0")).unwrap();
-        let comments = vec!["A"; 76]; // be aware that every comment adds 5 bytes to the header
-        let toniefile = Toniefile::new(file, 0x12345678, comments);
+        let myvec: Vec<u8> = vec![];
+        let cursor = Cursor::new(myvec);
+        let comments = vec!["A"; 75]; // be aware that every comment adds 5 bytes to the header
+        let toniefile = Toniefile::new(cursor, 0x12345678, comments);
         assert!(toniefile.is_ok());
 
     }
@@ -743,9 +745,10 @@ mod tests {
     #[test]
     #[should_panic]
     fn too_many_comments() {
-        let file = File::create(get_test_path().join("500304E0")).unwrap();
-        let comments = vec!["A"; 77]; // be aware that every comment adds 5 bytes to the header
-        let toniefile = Toniefile::new(file, 0x12345678, comments);
+        let myvec: Vec<u8> = vec![];
+        let cursor = Cursor::new(myvec);
+        let comments = vec!["A"; 76]; // be aware that every comment adds 5 bytes to the header
+        let toniefile = Toniefile::new(cursor, 0x12345678, comments);
         assert!(toniefile.is_ok());
     }
 
@@ -777,8 +780,9 @@ mod tests {
 
     #[test]
     fn fill_small_buffers_toniefile() {
-        let file = File::create(get_test_path().join("test_b")).unwrap();
-        let mut toniefile = Toniefile::new(file, 0x12345678, vec![""]).unwrap();
+        let myvec: Vec<u8> = vec![];
+        let cursor = Cursor::new(myvec);
+        let mut toniefile = Toniefile::new(cursor, 0x12345678, vec![""]).unwrap();
 
         let samples: Vec<i16> = read_file_i16(get_test_path().join("1000hz.wav").to_str().unwrap());
         for window in samples.chunks(TONIEFILE_FRAME_SIZE * OPUS_CHANNELS) {
@@ -786,15 +790,15 @@ mod tests {
             assert!(res.is_ok());
         }
 
-        toniefile.finalize().unwrap();
-        let mut file = File::open(get_test_path().join("test_b")).unwrap();
-        check_file_against_header(&mut file);
+        toniefile.finalize_no_consume().unwrap();
+        check_file_against_header(&mut toniefile.writer);
     }
 
     #[test]
     fn read_and_fill_chunks_toniefile() {
-        let file = File::create(get_test_path().join("test_a")).unwrap();
-        let mut toniefile = Toniefile::new(file, 0x12345678, vec![""]).unwrap();
+        let myvec: Vec<u8> = vec![];
+        let cursor = Cursor::new(myvec);
+        let mut toniefile = Toniefile::new(cursor, 0x12345678, vec![""]).unwrap();
 
         let mut f = File::open(get_test_path().join("1000hz.wav").to_str().unwrap()).unwrap();
         let mut wav_reader = hound::WavReader::new(&mut f).unwrap();
@@ -811,24 +815,28 @@ mod tests {
             samples_read += window.len() as u32;
         }
 
-        toniefile.finalize().unwrap();
-        let mut file = File::open(get_test_path().join("test_a")).unwrap();
-        check_file_against_header(&mut file);
+        toniefile.finalize_no_consume().unwrap();
+        check_file_against_header(&mut toniefile.writer);
     }
 
     #[test]
     fn header_is_correct() {
-        fill_single_buffer_toniefile();
-        let header = Toniefile::parse_header(
-            &mut File::open(get_test_path().join("500304E0").to_str().unwrap()).unwrap(),
-        );
+        let myvec: Vec<u8> = vec![];
+        let cursor = Cursor::new(myvec);
+        let mut toniefile = Toniefile::new(cursor, 0x12345678, vec![""]).unwrap();
+        let samples: Vec<i16> = read_file_i16(get_test_path().join("1000hz.wav").to_str().unwrap());
+        let res = toniefile.encode(&samples);
+        assert!(res.is_ok());
+
+        toniefile.finalize_no_consume().unwrap();
+
+        let mut cursor = toniefile.get_writer();
+        let header = Toniefile::parse_header(&mut cursor);
         assert!(header.is_ok());
         let header = header.unwrap();
-        let mut output_file =
-            File::open(get_test_path().join("500304E0").to_str().unwrap()).unwrap();
-        output_file.seek(SeekFrom::Start(0x1000)).unwrap();
+        cursor.seek(SeekFrom::Start(0x1000)).unwrap();
         let mut output_buffer = vec![];
-        output_file.read_to_end(&mut output_buffer).unwrap();
+        cursor.read_to_end(&mut output_buffer).unwrap();
 
         let mut hasher = Sha1::new();
         hasher.update(&output_buffer);

@@ -7,7 +7,7 @@
 //! The protobuf header itself must be padded to 4096 bytes as well and the Ogg header and Ogg comment page must
 //! be padded to 200 bytes.
 //! This results in a file like this:
-//! ```ignore
+//! ```text
 //! Address   Data                                               ASCII
 //! 00000000  00 00 0f fc 0a 14 04 ef  db a5 67 5d a9 a7 96 1e  |..........g]....|
 //! ^ The protobuf header (starts at 0x04) until 0x0FFF.
@@ -24,14 +24,14 @@
 //!
 //! # Usage
 //! The Toniefile struct takes anything that implements the Write and Seek traits as a writer at it's creation.
-//! When one of the methods encode() or finalize is called, it writes to the writer.
-//! During its creation it takes a unique audio id and a user comment as arguments.
+//! When one of the methods encode() or finalize() is called, it writes to the writer.
+//! During its creation it takes a unique audio id and an optional Vector of  user comments as arguments.
 //! The audio id can be an arbitrary uint32 and is used to identify the audio file on the Toniebox.
 //! (Use whatever you want here)
-//! The user comment is a string that is written to the Ogg comment page, it can be empty.
-//! ```ignore
+//! The user comment is a Vector auf &str that is written to the Ogg comment page, it can be empty.
+//! ```text
 //! fn fill_single_buffer_toniefile() {
-//!     // crate a file
+//!     // create a file
 //!     let file = File::new(~/my_little_toniefile").unwrap();
 //!     // create a toniefile struct
 //!     let mut toniefile = Toniefile::new (
@@ -43,10 +43,10 @@
 //!
 //!     // read samples, this can vary depending on your use case
 //!     // for example use the wav crate to read a whole wav file into memory
-//!     let mut f = File::open(path).expect("no file found");
+//!     let mut f = File::open("~/my_little_samplesfile").expect("no file found");
 //!     let (_, samples) = wav::read(&mut f).unwrap();
-//!     b.try_into_sixteen().unwrap()
-//!     let samples: Vec<i16> = b.to_str().unwrap();
+//!     samples.try_into_sixteen().unwrap()
+//!     let samples: Vec<i16> = samples.to_str().unwrap();
 //!
 //!     // write samples to toniefile
 //!     let res = toniefile.encode(&samples);
@@ -58,19 +58,15 @@
 //! don't want to have the whole samples file in memory at once.
 //! We can use new_simple() to create a Toniefile with a random audio id and no user comments if we don't
 //! care about them.
-//! Here we use the WavReader from the hound crate (https://crates.io/crates/hound) to read the samples
+//! Here we use the WavReader from the hound crate (<https://crates.io/crates/hound>) to read the samples
 //! in chunks.
-//! ```ignore
+//! ```text
 //! fn read_and_fill_chunks_toniefile() {
-//!     let file = File::new(get_test_path().join("500304E0")).unwrap();
-//!     let mut toniefile = Toniefile::new(
-//!         file,
-//!         0x12345678,
-//!         "",
-//!     )
+//!     let file = File::new_simple("~/my_little_toniefile").unwrap();
+//!     let mut toniefile = Toniefile::new_simple(file)
 //!     .unwrap();
 //!
-//!     let mut f = File::open(get_test_path().join("1000hz.wav").to_str().unwrap()).unwrap();
+//!     let mut f = File::open("~/my_little_samplesfile").unwrap();
 //!     let mut wav_reader = hound::WavReader::new(&mut f).unwrap();
 //!     let total_samples = wav_reader.duration();
 //!     let mut wav_iter = wav_reader.samples::<i16>();
@@ -199,7 +195,7 @@ impl Toniefile<File> {
     /// fn parse_my_header() {
     ///     let myvec: Vec<u8> = vec![];
     ///     let cursor = Cursor::new(myvec);
-    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, Some(Vec::new())).unwrap();
+    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
     ///     let samples: Vec<i16> = vec![0; 48000 * 2 * 60]; // 60 seconds of finest silence
     ///     let res = toniefile.encode(&samples);
     ///     assert!(res.is_ok());
@@ -222,6 +218,7 @@ impl Toniefile<File> {
         let header = TonieboxAudioFileHeader::decode(&mut Cursor::new(buffer))?;
         Ok(header)
     }
+
     /// Associated function to get the audio data out of a Toniefile.
     /// After a call to this function the passed is stream will be seeked to the end of it.
     /// ```
@@ -231,7 +228,7 @@ impl Toniefile<File> {
     /// fn get_audio_data() {
     ///     let myvec: Vec<u8> = vec![];
     ///     let cursor = Cursor::new(myvec);
-    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, Some(Vec::new())).unwrap();
+    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
     ///     let samples: Vec<i16> = vec![0; 48000 * 2 * 60]; // 60 seconds of finest silence
     ///     let res = toniefile.encode(&samples);
     ///     assert!(res.is_ok());
@@ -281,9 +278,11 @@ impl<F: Write + Seek> Toniefile<F> {
     /// header prefilled and first two ogg pages header and comments written.
     ///
     /// - pass in a writer that implements the Write and Seek traits. (e.g. File or Cursor)
-    /// - audio_id can be any u32 and is used to identify the audio file on the Toniebox
-    /// - user_comments is a vector of strings that will be written to the Ogg comment page
+    /// - `audio_id` can be any u32 and is used to identify the audio file on the Toniebox
+    /// - `user_comments` is a vector of strings that will be written to the Ogg comment page
     ///
+    /// Returns an error if the space for comments in the file would overflow. (382 bytes, but
+    /// every comment needs 4 bytes extra for the length indicator)
     /// returns a Toniefile struct if successful
     /// ```
     /// use std::io::Cursor;
@@ -410,7 +409,7 @@ impl<F: Write + Seek> Toniefile<F> {
         Ok(toniefile)
     }
 
-    /// Add a new chapter to the Toniefiles audio data
+    /// Add a new chapter to the Toniefile's audio data
     /// ```
     /// use std::io::{Cursor, Seek, SeekFrom, Write};
     /// use toniefile::Toniefile;
@@ -443,11 +442,11 @@ impl<F: Write + Seek> Toniefile<F> {
         Ok(())
     }
 
-    /// Encode data into the Toniefile. This can either be called once with a single buffer of
-    /// samples or multiple times with smaller buffers. In the latter case the buffers will be appended
+    /// Encode data into the Toniefile. This function can be called either once with a single buffer of
+    /// samples or multiple times with smaller buffers. In the latter case, the buffers will be appended
     /// to the file.
-    /// The samples must be interleaved and in the order left, right, left, right, ...
-    /// The samples must be 16bit signed integers.
+    /// The samples must be interleaved, following the order: left, right, left, right, ...
+    /// Additionally, the samples must be 16-bit signed integers.
     pub fn encode(&mut self, sample_buf: &[i16]) -> Result<(), Box<dyn Error>> {
         // TODO get rid of samples available, use sample_buf.len()
         const PAGE_HEADER_SIZE: i64 = 27;
@@ -485,15 +484,12 @@ impl<F: Write + Seek> Toniefile<F> {
             let mut frame_payload = (page_remain / 256) * 255 + (page_remain % 256) - 1;
             let reconstructed = (frame_payload / 255) + 1 + frame_payload;
 
-            /* when due to segment sizes we would end up with a 1 byte gap, make sure that the next run will have at least 64 byte.
-             * reason why this could happen is that "adding one byte" would require one segment more and thus occupies two byte more.
-             * if this would happen, just reduce the calculated free space such that there is room for another segment.
-             */
+            // when due to segment sizes we would end up with a 1 byte gap, make sure that the next run will have at least 64 byte.
+            // reason why this could happen is that "adding one byte" would require one segment more and thus occupies two byte more.
+            // if this would happen, just reduce the calculated free space such that there is room for another segment.
             if page_remain != reconstructed && frame_payload > OPUS_PACKET_MINSIZE as i64 {
                 frame_payload -= OPUS_PACKET_MINSIZE as i64
             }
-            // println!("page remain {}", page_remain);
-            // println!("frame payload {}", frame_payload);
             if frame_payload < OPUS_PACKET_MINSIZE as i64 {
                 return Err(Box::new(ToniefileError::NotEnoughSpace));
             }
@@ -508,7 +504,7 @@ impl<F: Write + Seek> Toniefile<F> {
                 frame_len = target_length as usize;
             }
 
-            /* we have to retrieve the actually encoded samples in this frame */
+            // we have to retrieve the actually encoded samples in this frame
             let nb_frames;
             unsafe {
                 // NOTE: get_nb_frames is not available in audiopus 0.2. Once 0.3 is released, this can be removed
@@ -578,9 +574,9 @@ impl<F: Write + Seek> Toniefile<F> {
         Ok(())
     }
 
-    /// Finalize the toniefile by writing the sha1 hash in the header.
-    /// This consumes the Toniefile struct and can therefore onl be called once.
-    /// Toniefile is dropped and therefore any open files are closed automatically
+    /// Finalize the Toniefile by computing and writing the SHA-1 hash in the header.
+    /// This operation consumes the Toniefile struct and can only be called once.
+    /// The Toniefile is dropped, automatically closing any open files.
     pub fn finalize(mut self) -> Result<(), Box<dyn Error>> {
         self.writer.flush()?;
         self.header.sha1_hash = self.sha1.finalize_fixed_reset().to_vec();
@@ -590,11 +586,12 @@ impl<F: Write + Seek> Toniefile<F> {
 
         Ok(())
     }
-    /// Finalize the toniefile by writing the sha1 hash in the header.
-    /// This does not consume the Toniefile struct, however open file
+
+    /// Finalize the Toniefile by writing the SHA-1 hash in the header.
+    /// This method does not consume the Toniefile struct; however, open file
     /// descriptors are not closed.
-    /// Use this method when you want to write the Toniefile to a vector instead
-    /// of a file so the cursor wrapped vector at self.writer can be use later.
+    /// Use this method when you want to write the Toniefile to a vector, so the
+    /// cursor-wrapped vector at `self.writer` can be used later.
     pub fn finalize_no_consume(&mut self) -> Result<(), Box<dyn Error>> {
         self.writer.flush()?;
         self.header.sha1_hash = self.sha1.finalize_fixed_reset().to_vec();
@@ -606,18 +603,21 @@ impl<F: Write + Seek> Toniefile<F> {
         Ok(())
     }
 
-    /// Get the writer of the toniefile struct, consuming it.
-    /// Call this only after finalize_no_consume() to get the writer back.
+    /// Consume the Toniefile struct and return its writer.
+    /// Only call this after calling finalize_no_consume() to retrieve the writer.
     pub fn get_writer(self) -> F {
         self.writer
     }
-    /// Get a reference to the header of the Toniefile struct
-    /// this can be used to get header data during the creation of the Toniefile
-    /// but be aware that the header is only updated when finalize() is called
+
+    /// Get a reference to the header of the Toniefile struct.
+    /// This method allows access to the header data during the creation of the Toniefile,
+    /// but note that the header is only updated when finalize() is called.
     pub fn get_header(&self) -> &TonieboxAudioFileHeader {
         &self.header
     }
 
+    // adds a comment to the ogg comment page. This can only be called during creation
+    // otherwise it will mess up the legths
     fn comment_add(
         &mut self,
         cursor: &mut Cursor<&mut [u8]>,
@@ -724,7 +724,8 @@ mod tests {
     fn create_toniefile() {
         let myvec: Vec<u8> = vec![];
         let cursor = Cursor::new(myvec);
-        let toniefile = Toniefile::new(cursor, 0x12345678, Some(vec!["Hello World", "How are You"]));
+        let toniefile =
+            Toniefile::new(cursor, 0x12345678, Some(vec!["Hello World", "How are You"]));
         assert!(toniefile.is_ok());
     }
 

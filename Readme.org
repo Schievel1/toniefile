@@ -1,107 +1,110 @@
 #+title: Readme
 
- * Toniefile
+* Toniefile
 
- The Toniefile crate provides methods to write audio data in a format that can be played by a
- Toniebox. The Toniefile format is a modified Ogg Opus file format with a protobuf header.
- However the Ogg pages must be exactly 4096 bytes long and must begin and end at a 4096 byte mark in the file.
- (except for the first page, which starts at 0x1200 and ends at 0x1FFF)
- The protobuf header itself must be padded to 4096 bytes as well and the Ogg header and Ogg comment page must
- be padded to 200 bytes.
- This results in a file like this:
- #+begin_src
- Address   Data                                               ASCII
- 00000000  00 00 0f fc 0a 14 04 ef  db a5 67 5d a9 a7 96 1e  |..........g]....|
- ^ The protobuf header (starts at 0x04) until 0x0FFF. 0x00 - 0x03 are the length
- * the header in bytes
- 00001000  4f 67 67 53 00 02 00 00  00 00 00 00 00 00 78 56  |OggS..........xV|
- ^ Opus Header and Opus Comment until 0x11FF
- 00001200  4f 67 67 53 00 00 40 38  00 00 00 00 00 00 78 56  |OggS..@8......xV|
- ^ First payload audio data until 0x1FFF
- 00002000  4f 67 67 53 00 00 40 38  00 00 00 00 00 00 78 56  |OggS..@8......xV|
- ^ Second payload audio data until 0x2FFF
- 00003000  4f 67 67 53 00 00 40 38  00 00 00 00 00 00 78 56  |OggS..@8......xV|
- ^ And so on
- #+end_src
+The Toniefile crate provides methods to write audio data in a format that can be played by a
+Toniebox. The Toniefile format is a modified Ogg Opus file format with a protobuf header.
+However the Ogg pages must be exactly 4096 bytes long and must begin and end at a 4096 byte mark in the file.
+(except for the first page, which starts at 0x1200 and ends at 0x1FFF)
+The protobuf header itself must be padded to 4096 bytes as well and the Ogg header and Ogg comment page must
+be padded to 200 bytes.
+This results in a file like this:
+#+begin_src
 
- # Usage
- The Toniefile struct takes anything that implements the Write and Seek traits as a writer at it's creation.
- When one of the methods encode() or finalize is called, it writes to the writer.
- During its creation it takes a unique audio id and a user comment as arguments.
- The audio id can be an arbitrary uint32 and is used to identify the audio file on the Toniebox.
- (Use whatever you want here)
- The user comment is a string that is written to the Ogg comment page, it can be empty.
- #+begin_src Rust
- fn fill_single_buffer_toniefile() {
-     // crate a file
-     let file = File::new(~/my_little_toniefile").unwrap();
-     // create a toniefile struct
-     let mut toniefile = Toniefile::new (
-         file,
-         0x12345678,
-         "",
-     )
-     .unwrap();
+address   data                                               ascii
+00000000  00 00 0f fc 0a 14 04 ef  db a5 67 5d a9 a7 96 1e  |..........g]....|
+^ The protobuf header (starts at 0x04) until 0x0FFF.
+> 0x00 - 0x03 are the length of the header in bytes
+00001000  4f 67 67 53 00 02 00 00  00 00 00 00 00 00 78 56  |OggS..........xV|
+^ Opus Header and Opus Comment until 0x11FF
+00001200  4f 67 67 53 00 00 40 38  00 00 00 00 00 00 78 56  |OggS..@8......xV|
+^ First payload audio data until 0x1FFF
+00002000  4f 67 67 53 00 00 40 38  00 00 00 00 00 00 78 56  |OggS..@8......xV|
+^ Second payload audio data until 0x2FFF
+00003000  4f 67 67 53 00 00 40 38  00 00 00 00 00 00 78 56  |OggS..@8......xV|
+^ And so on
+#+end_src
 
-     // read samples, this can vary depending on your use case
-     // for example use the wav crate to read a whole wav file into memory
-     let mut f = File::open(path).expect("no file found");
-     let (_, samples) = wav::read(&mut f).unwrap();
-     b.try_into_sixteen().unwrap()
-     let samples: Vec<i16> = b.to_str().unwrap();
+*  Usage
+The Toniefile struct takes anything that implements the Write and Seek traits as a writer at it's creation.
+When one of the methods encode() or finalize() is called, it writes to the writer.
+During its creation it takes a unique audio id and an optional Vector of  user comments as arguments.
+The audio id can be an arbitrary uint32 and is used to identify the audio file on the Toniebox.
+(Use whatever you want here)
+The user comment is a Vector auf &str that is written to the Ogg comment page, it can be empty.
+#+begin_src Rust
+fn fill_single_buffer_toniefile() {
+    // create a file
+    let file = File::new(~/my_little_toniefile").unwrap();
+    // create a toniefile struct
+    let mut toniefile = Toniefile::new (
+        file,
+        0x12345678,
+        Some(vec!["my comment", "another comment"])
+    )
+    .unwrap();
 
-     // write samples to toniefile
-     let res = toniefile.encode(&samples);
-     // finalize the toniefile
-     toniefile.finalize().unwrap();
- }
- #+end_src
- It is also possible to call encode() multiple times with smaller buffers. This can be useful if you
- don't want to have the whole samples file in memory at once.
- Here we use the WavReader from the hound crate (https://crates.io/crates/hound) to read the samples
- in chunks.
- #+begin_src Rust
- fn read_and_fill_chunks_toniefile() {
-     let file = File::new(get_test_path().join("500304E0")).unwrap();
-     let mut toniefile = Toniefile::new(
-         file,
-         0x12345678,
-         "",
-     )
-     .unwrap();
+    // read samples, this can vary depending on your use case
+    // for example use the wav crate to read a whole wav file into memory
+    let mut f = File::open("~/my_little_samplesfile").expect("no file found");
+    let (_, samples) = wav::read(&mut f).unwrap();
+    samples.try_into_sixteen().unwrap()
+    let samples: Vec<i16> = samples.to_str().unwrap();
 
-     let mut f = File::open(get_test_path().join("1000hz.wav").to_str().unwrap()).unwrap();
-     let mut wav_reader = hound::WavReader::new(&mut f).unwrap();
-     let total_samples = wav_reader.duration();
-     let mut wav_iter = wav_reader.samples::<i16>();
-     let mut samples_read = 0;
-     while samples_read < total_samples {
-         let mut window = vec![];
-         for _ in 0..TONIEFILE_FRAME_SIZE * OPUS_CHANNELS {
-             window.push(wav_iter.next().unwrap().unwrap());
-         }
-         let res = toniefile.encode(&window);
-         assert!(res.is_ok());
-         samples_read += window.len() as u32;
-     }
+    // write samples to toniefile
+    let res = toniefile.encode(&samples);
+    // finalize the toniefile
+    toniefile.finalize().unwrap();
+}
+#+end_src
 
-     toniefile.finalize().unwrap();
- }
- #+end_src
- Lastly it is also possible to let the Toniefile struct write into a vector, instead of a file on disk as long as the vector
- implements the Write and Seek traits. We can use the Cursor struct from the std library for this.
- #+begin_src Rust
- use std::io::{Cursor, Seek, SeekFrom, Write};
- use toniefile::Toniefile;
+It is also possible to call encode() multiple times with smaller buffers. This can be useful if you
+don't want to have the whole samples file in memory at once.
+We can use new_simple() to create a Toniefile with a random audio id and no user comments if we don't
+care about them.
+Here we use the WavReader from the hound crate (<https://crates.io/crates/hound>) to read the samples
+in chunks.
 
- fn fill_vector_toniefile() {
-     let myvec: Vec<u8> = vec![];
-     let cursor = Cursor::new(myvec);
-     let mut toniefile = Toniefile::new(cursor, 0x12345678, vec![""]).unwrap();
-     let samples: Vec<i16> = vec![0; 48000 * 2 * 60]; // 60 seconds of finest silence
-     let res = toniefile.encode(&samples);
-     assert!(res.is_ok());
-     toniefile.finalize_no_consume().unwrap();
-     // do something with the vector e.g. writing it to disk or sending it over the network
- }
- #+end_src
+#+begin_src Rust
+fn read_and_fill_chunks_toniefile() {
+    let file = File::new_simple("~/my_little_toniefile").unwrap();
+    let mut toniefile = Toniefile::new_simple(file)
+    .unwrap();
+
+    let mut f = File::open("~/my_little_samplesfile").unwrap();
+    let mut wav_reader = hound::WavReader::new(&mut f).unwrap();
+    let total_samples = wav_reader.duration();
+    let mut wav_iter = wav_reader.samples::<i16>();
+    let mut samples_read = 0;
+    while samples_read < total_samples {
+        let mut window = vec![];
+        for _ in 0..TONIEFILE_FRAME_SIZE * OPUS_CHANNELS {
+            window.push(wav_iter.next().unwrap().unwrap());
+        }
+        let res = toniefile.encode(&window);
+        assert!(res.is_ok());
+        samples_read += window.len() as u32;
+    }
+
+    toniefile.finalize().unwrap();
+}
+#+end_src
+
+Lastly it is also possible to let the Toniefile struct write into a vector, instead of a file on disk as long as the vector
+implements the Write and Seek traits. We can use the Cursor struct from the std library for this.
+
+#+begin_src Rust
+use std::io::{Cursor, Seek, SeekFrom, Write};
+use toniefile::Toniefile;
+
+fn fill_vector_toniefile() {
+    let myvec: Vec<u8> = vec![];
+    let cursor = Cursor::new(myvec);
+    let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
+    let samples: Vec<i16> = vec![0; 48000 * 2 * 60]; // 60 seconds of finest silence
+    let res = toniefile.encode(&samples);
+    assert!(res.is_ok());
+    toniefile.finalize_no_consume().unwrap();
+    // do something with the vector e.g. writing it to disk or sending it over the network
+}
+#+end_src

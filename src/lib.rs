@@ -447,6 +447,21 @@ impl<F: Write + Seek> Toniefile<F> {
     /// to the file.
     /// The samples must be interleaved, following the order: left, right, left, right, ...
     /// Additionally, the samples must be 16-bit signed integers.
+    /// ```
+    /// use std::io::{Cursor, Seek, SeekFrom, Write};
+    /// use toniefile::Toniefile;
+    ///
+    /// fn fill_vector_toniefile() {
+    ///     let myvec: Vec<u8> = vec![];
+    ///     let cursor = Cursor::new(myvec);
+    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
+    ///     let samples: Vec<i16> = vec![0; 48000 * 2 * 60]; // 60 seconds of finest silence
+    ///
+    ///     let res = toniefile.encode(&samples);
+    ///     assert!(res.is_ok());
+    ///
+    ///     toniefile.finalize_no_consume().unwrap();
+    /// }
     pub fn encode(&mut self, sample_buf: &[i16]) -> Result<(), Box<dyn Error>> {
         // TODO get rid of samples available, use sample_buf.len()
         const PAGE_HEADER_SIZE: i64 = 27;
@@ -577,6 +592,23 @@ impl<F: Write + Seek> Toniefile<F> {
     /// Finalize the Toniefile by computing and writing the SHA-1 hash in the header.
     /// This operation consumes the Toniefile struct and can only be called once.
     /// The Toniefile is dropped, automatically closing any open files.
+    /// ```
+    /// use std::io::{Cursor, Seek, SeekFrom, Write};
+    /// use toniefile::Toniefile;
+    ///
+    /// fn test_finalize() {
+    ///     let myvec: Vec<u8> = vec![];
+    ///     let cursor = Cursor::new(myvec);
+    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
+    ///     let samples: Vec<i16> = vec![0; 48000 * 2 * 60]; // 60 seconds of finest silence
+    ///
+    ///     let res = toniefile.encode(&samples);
+    ///     assert!(res.is_ok());
+    ///
+    ///     assert!(toniefile.finalize().is_ok());
+    ///     // after finalize() toniefile is dropped
+    /// }
+    /// ```
     pub fn finalize(mut self) -> Result<(), Box<dyn Error>> {
         self.writer.flush()?;
         self.header.sha1_hash = self.sha1.finalize_fixed_reset().to_vec();
@@ -592,6 +624,25 @@ impl<F: Write + Seek> Toniefile<F> {
     /// descriptors are not closed.
     /// Use this method when you want to write the Toniefile to a vector, so the
     /// cursor-wrapped vector at `self.writer` can be used later.
+    /// ```
+    /// use std::io::{Cursor, Seek, SeekFrom, Write};
+    /// use toniefile::Toniefile;
+    ///
+    /// fn test_finalize_no_consume() {
+    ///     let myvec: Vec<u8> = vec![];
+    ///     let cursor = Cursor::new(myvec);
+    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
+    ///     let samples: Vec<i16> = vec![0; 48000 * 2 * 60]; // 60 seconds of finest silence
+    ///
+    ///     let res = toniefile.encode(&samples);
+    ///     assert!(res.is_ok());
+    ///
+    ///     toniefile.finalize_no_consume().unwrap();
+    ///     let mut new_cursor = toniefile.get_writer();
+    ///     // finalize_no_consume automatically rewinds the cursor
+    ///     assert_eq!(new_cursor.position(), 0);
+    /// }
+    /// ```
     pub fn finalize_no_consume(&mut self) -> Result<(), Box<dyn Error>> {
         self.writer.flush()?;
         self.header.sha1_hash = self.sha1.finalize_fixed_reset().to_vec();
@@ -605,13 +656,45 @@ impl<F: Write + Seek> Toniefile<F> {
 
     /// Consume the Toniefile struct and return its writer.
     /// Only call this after calling finalize_no_consume() to retrieve the writer.
+    /// ```
+    /// use std::io::{Cursor, Seek, SeekFrom, Write};
+    /// use toniefile::Toniefile;
+    ///
+    /// fn test_get_writer() {
+    ///     let myvec: Vec<u8> = vec![];
+    ///     let cursor = Cursor::new(myvec);
+    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
+    ///     let samples: Vec<i16> = vec![0; 48000 * 2 * 60]; // 60 seconds of finest silence
+    ///
+    ///     let res = toniefile.encode(&samples);
+    ///     assert!(res.is_ok());
+    ///
+    ///     toniefile.finalize_no_consume().unwrap();
+    ///     let mut new_cursor = toniefile.get_writer();
+    ///     // finalize_no_consume automatically rewinds the cursor
+    ///     assert_eq!(new_cursor.position(), 0);
+    /// }
+    /// ```
     pub fn get_writer(self) -> F {
         self.writer
     }
 
     /// Get a reference to the header of the Toniefile struct.
     /// This method allows access to the header data during the creation of the Toniefile,
-    /// but note that the header is only updated when finalize() is called.
+    /// but note that the header is only updated during new() / new_simple() and  when
+    /// finalize() or finalize_no_consume() is called.
+    /// ```
+    /// use std::io::{Cursor, Seek, SeekFrom, Write};
+    /// use toniefile::Toniefile;
+    ///
+    /// fn test_get_header() {
+    ///     let myvec: Vec<u8> = vec![];
+    ///     let cursor = Cursor::new(myvec);
+    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
+    ///     let header = toniefile.get_header();
+    ///     assert_eq!(header.audio_id, 0x12345678);
+    /// }
+    /// ```
     pub fn get_header(&self) -> &TonieboxAudioFileHeader {
         &self.header
     }
@@ -697,7 +780,6 @@ mod tests {
             .join("test/assets");
         std::fs::create_dir_all(&test_path).unwrap();
         test_path
-
     }
 
     fn get_test_out_path() -> PathBuf {
@@ -741,6 +823,14 @@ mod tests {
     }
 
     #[test]
+    fn create_simple_toniefile() {
+        let myvec: Vec<u8> = vec![];
+        let cursor = Cursor::new(myvec);
+        let toniefile = Toniefile::new_simple(cursor);
+        assert!(toniefile.is_ok());
+    }
+
+    #[test]
     fn just_enough_comments() {
         let myvec: Vec<u8> = vec![];
         let cursor = Cursor::new(myvec);
@@ -778,7 +868,8 @@ mod tests {
     fn fill_single_buffer_toniefile() {
         let file = File::create(get_test_out_path().join("500304E0")).unwrap();
         let mut toniefile = Toniefile::new(file, 0x12345678, None).unwrap();
-        let samples: Vec<i16> = read_file_i16(get_test_assets_path().join("1000hz.wav").to_str().unwrap());
+        let samples: Vec<i16> =
+            read_file_i16(get_test_assets_path().join("1000hz.wav").to_str().unwrap());
         let res = toniefile.encode(&samples);
         assert!(res.is_ok());
 
@@ -792,7 +883,8 @@ mod tests {
         let myvec: Vec<u8> = vec![];
         let cursor = Cursor::new(myvec);
         let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
-        let samples: Vec<i16> = read_file_i16(get_test_assets_path().join("1000hz.wav").to_str().unwrap());
+        let samples: Vec<i16> =
+            read_file_i16(get_test_assets_path().join("1000hz.wav").to_str().unwrap());
         let res = toniefile.encode(&samples);
         assert!(res.is_ok());
 
@@ -804,7 +896,8 @@ mod tests {
         let myvec: Vec<u8> = vec![];
         let cursor = Cursor::new(myvec);
         let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
-        let samples: Vec<i16> = read_file_i16(get_test_assets_path().join("1000hz.wav").to_str().unwrap());
+        let samples: Vec<i16> =
+            read_file_i16(get_test_assets_path().join("1000hz.wav").to_str().unwrap());
         let res = toniefile.encode(&samples);
         assert!(res.is_ok());
 
@@ -826,7 +919,8 @@ mod tests {
         let cursor = Cursor::new(myvec);
         let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
 
-        let samples: Vec<i16> = read_file_i16(get_test_assets_path().join("1000hz.wav").to_str().unwrap());
+        let samples: Vec<i16> =
+            read_file_i16(get_test_assets_path().join("1000hz.wav").to_str().unwrap());
         for window in samples.chunks(TONIEFILE_FRAME_SIZE * OPUS_CHANNELS) {
             let res = toniefile.encode(window);
             assert!(res.is_ok());
@@ -842,7 +936,8 @@ mod tests {
         let cursor = Cursor::new(myvec);
         let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
 
-        let mut f = File::open(get_test_assets_path().join("1000hz.wav").to_str().unwrap()).unwrap();
+        let mut f =
+            File::open(get_test_assets_path().join("1000hz.wav").to_str().unwrap()).unwrap();
         let mut wav_reader = hound::WavReader::new(&mut f).unwrap();
         let total_samples = wav_reader.duration();
         let mut wav_iter = wav_reader.samples::<i16>();
@@ -866,7 +961,8 @@ mod tests {
         let myvec: Vec<u8> = vec![];
         let cursor = Cursor::new(myvec);
         let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
-        let samples: Vec<i16> = read_file_i16(get_test_assets_path().join("1000hz.wav").to_str().unwrap());
+        let samples: Vec<i16> =
+            read_file_i16(get_test_assets_path().join("1000hz.wav").to_str().unwrap());
         let res = toniefile.encode(&samples);
         assert!(res.is_ok());
 

@@ -112,7 +112,6 @@ use prost::Message;
 use rand::Rng;
 use sha1::digest::FixedOutputReset;
 use sha1::{Digest, Sha1};
-use std::error::Error;
 use std::ffi::CStr;
 use std::io::{Cursor, Read};
 use std::{

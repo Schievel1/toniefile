@@ -8,12 +8,11 @@ edition = "2021"
 [dependencies]
 sha1 = "0.10.6"
 audiopus = "^0.2"
-libogg = { git = "https://github.com/Schievel1/libogg-rs" }
+libogg = { git = "https://github.com/Schievel1/libogg-rs", rev = "1416bc84a52b52beda043f064644e9928d40ae5b" }
 prost = "0.6"
 byteorder = "^1.0"
 thiserror = "^1.0"
 rand = "0.8.5"
-
 
 [build-dependencies]
 prost-build = { version = "0.6" }

@@ -151,7 +151,7 @@ pub enum ToniefileError {
     NotEnoughSpace,
     #[error("Encoded frame size mismatch! Got {0}, should be {1}")]
     FrameSizeDontMatch(usize, usize),
-    #[error("Unexpected small padding at granule postion{0} ( {1}sec)")]
+    #[error("Unexpected small padding at granule position{0} ( {1}sec)")]
     SmallPaddingError(u64, u64),
     #[error("Block alignment error at position {:#010x}", .0)]
     BlockAlignmentError(u64),
@@ -709,7 +709,7 @@ impl<F: Write + Seek> Toniefile<F> {
     }
 
     // adds a comment to the ogg comment page. This can only be called during creation
-    // otherwise it will mess up the legths
+    // otherwise it will mess up the lengths
     fn comment_add(
         &mut self,
         cursor: &mut Cursor<&mut [u8]>,

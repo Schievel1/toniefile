@@ -10,6 +10,11 @@ repository = "https://github.com/Schievel1/toniefile/"
 readme = "Readme.org"
 keywords = ["audiobooks", "audio"]
 categories = ["multimedia::audio", "multimedia::encoding"]
+exclude = [
+        "test/out/*",
+        "test/assets/*",
+        ".github/*",
+]
 
 [dependencies]
 sha1 = "0.10.6"

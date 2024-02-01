@@ -1,0 +1,7 @@
+#+title: Changelog
+
+* 0.1.1
+- improved documentation
+
+* 0.1.0
+- initial release

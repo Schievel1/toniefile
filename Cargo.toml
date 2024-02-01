@@ -1,9 +1,15 @@
 [package]
 name = "toniefile"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+authors = ["Pascal Jaeger <pascal.jaeger@leimstift.de>"]
+license-file = "LICENSE"
+description = "The Toniefile crate provides methods to write audio data in a format that can be played by a Toniebox"
+homepage = "https://github.com/Schievel1/toniefile/"
+repository = "https://github.com/Schievel1/toniefile/"
+readme = "Readme.org"
+keywords = ["audiobooks", "audio"]
+categories = ["multimedia::audio", "multimedia::encoding"]
 
 [dependencies]
 sha1 = "0.10.6"

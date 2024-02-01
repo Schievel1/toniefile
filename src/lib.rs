@@ -1,8 +1,9 @@
 //! # Toniefile
 //!
 //! The Toniefile crate provides methods to write audio data in a format that can be played by a
-//! Toniebox. The Toniefile format is a modified Ogg Opus file format with a protobuf header.
-//! However the Ogg pages must be exactly 4096 bytes long and must begin and end at a 4096 byte mark in the file.
+//! Toniebox. The Toniefile format is a modified Ogg Opus file format with a [Protobuf](https://protobuf.dev/) header.
+//! However the [Ogg pages](https://en.wikipedia.org/wiki/Ogg_page) must be exactly 4096 bytes long and must begin
+//! and end at a 4096 byte mark in the file.
 //! (except for the first page, which starts at 0x1200 and ends at 0x1FFF)
 //! The protobuf header itself must be padded to 4096 bytes as well and the Ogg header and Ogg comment page must
 //! be padded to 200 bytes.
@@ -88,17 +89,18 @@
 //! implements the Write and Seek traits. We can use the Cursor struct from the std library for this.
 //! ```
 //! use std::io::{Cursor, Seek, SeekFrom, Write};
-//! use toniefile::Toniefile;
+//! use toniefile::{Toniefile, ToniefileError};
 //!
-//! fn fill_vector_toniefile() {
+//! fn fill_vector_toniefile() -> Result<(), ToniefileError> {
 //!     let myvec: Vec<u8> = vec![];
 //!     let cursor = Cursor::new(myvec);
-//!     let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
+//!     let mut toniefile = Toniefile::new(cursor, 0x12345678, None)?;
 //!     let samples: Vec<i16> = vec![0; 48000 * 2 * 60]; // 60 seconds of finest silence
 //!     let res = toniefile.encode(&samples);
 //!     assert!(res.is_ok());
-//!     toniefile.finalize_no_consume().unwrap();
+//!     toniefile.finalize_no_consume()?;
 //!     // do something with the vector e.g. writing it to disk or sending it over the network
+//!     Ok(())
 //! }
 //! ```
 //!
@@ -113,6 +115,7 @@ use rand::Rng;
 use sha1::digest::FixedOutputReset;
 use sha1::{Digest, Sha1};
 use std::ffi::CStr;
+use std::fmt::{Display, Formatter};
 use std::io::{Cursor, Read};
 use std::{
     fs::File,
@@ -170,6 +173,16 @@ pub enum ToniefileError {
 pub mod toniehead {
     #![allow(non_snake_case)]
     include!(concat!(env!("OUT_DIR"), "/toniehead.rs"));
+    use std::fmt::{Display, Formatter};
+    impl Display for TonieboxAudioFileHeader {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            write!(
+                f,
+                "audio_id: {}\naudio length: {} kbyte\ntrack_page_nums: {:?}\nsha1_hash: {:?}\nfill length: {:?} }}",
+                self.audio_id, self.num_bytes / 1024, self.track_page_nums, self.sha1_hash, self.fill.len()
+            )
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -186,29 +199,48 @@ pub struct Toniefile<F: Write + Seek> {
     ogg_granulepos: u64,
     ogg_packet_count: i64,
     // header
-    header: TonieboxAudioFileHeader,
-    sha1: Sha1,
-    taf_block_number: u32,
+    taf_header: TonieboxAudioFileHeader,
+    sha1_ctx: Sha1,
+    // current page number
+    taf_page_number: u32,
+}
+
+impl<F: Write + Seek> Display for Toniefile<F> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "audio_id: {}\naudio_length: {} bytes\ntaf_page_number: {}\nfile_position: {}",
+            self.taf_header.audio_id, self.audio_length, self.taf_page_number, self.file_position
+        )
+    }
 }
 
 impl Toniefile<File> {
     /// Associated function to parse the header of a Toniefile and return it
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file is not seekable or a header could not be found.
+    ///
+    /// # Example
+    ///
     /// ```
-    /// use std::io::{Cursor, Seek, SeekFrom, Write};
-    /// use toniefile::Toniefile;
-    ///
-    /// fn parse_my_header() {
-    ///     let myvec: Vec<u8> = vec![];
-    ///     let cursor = Cursor::new(myvec);
-    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
-    ///     let samples: Vec<i16> = vec![0; 48000 * 2 * 60]; // 60 seconds of finest silence
-    ///     let res = toniefile.encode(&samples);
-    ///     assert!(res.is_ok());
-    ///     toniefile.finalize_no_consume().unwrap();
-    ///
-    ///     let header = Toniefile::parse_header(&mut toniefile.get_writer()).unwrap();
+    /// # use std::io::{Cursor, Seek, SeekFrom, Write};
+    /// # use toniefile::{Toniefile, ToniefileError};
+    /// #
+    /// # fn parse_my_header() -> Result<(), ToniefileError> {
+    /// #    let myvec: Vec<u8> = vec![];
+    /// #    let cursor = Cursor::new(myvec);
+    /// #    let mut toniefile = Toniefile::new(cursor, 0x12345678, None)?;
+    /// #    let samples: Vec<i16> = vec![0; 48000 * 2 * 60]; // 60 seconds of finest silence
+    /// #    let res = toniefile.encode(&samples);
+    /// #    assert!(res.is_ok());
+    /// #    toniefile.finalize_no_consume()?;
+    ///     // you can also pass in a std::fs::File here
+    ///     let header = Toniefile::parse_header(&mut toniefile.writer())?;
     ///     assert_eq!(header.audio_id, 0x12345678);
-    /// }
+    /// #   Ok(())
+    /// # }
     ///
     /// ```
     pub fn parse_header<R: Read + Seek>(
@@ -226,25 +258,30 @@ impl Toniefile<File> {
 
     /// Associated function to get the audio data out of a Toniefile.
     /// After a call to this function the passed is stream will be seeked to the end of it.
-    /// ```
-    /// use std::io::{Cursor, Seek, SeekFrom, Write};
-    /// use toniefile::Toniefile;
     ///
-    /// fn get_audio_data() {
-    ///     let myvec: Vec<u8> = vec![];
-    ///     let cursor = Cursor::new(myvec);
-    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
-    ///     let samples: Vec<i16> = vec![0; 48000 * 2 * 60]; // 60 seconds of finest silence
-    ///     let res = toniefile.encode(&samples);
-    ///     assert!(res.is_ok());
-    ///     toniefile.finalize_no_consume().unwrap();
-    ///     let audio_data = Toniefile::extract_audio(&mut toniefile.get_writer()).unwrap();
+    /// # Example
+    ///
+    /// ```
+    /// # use std::io::{Cursor, Seek, SeekFrom, Write};
+    /// # use toniefile::{Toniefile, ToniefileError};
+    /// #
+    /// # fn get_audio_data() -> Result<(), ToniefileError> {
+    /// #    let myvec: Vec<u8> = vec![];
+    /// #    let cursor = Cursor::new(myvec);
+    /// #    let mut toniefile = Toniefile::new(cursor, 0x12345678, None)?;
+    /// #    let samples: Vec<i16> = vec![0; 48000 * 2 * 60]; // 60 seconds of finest silence
+    /// #    let res = toniefile.encode(&samples);
+    /// #    assert!(res.is_ok());
+    /// #    toniefile.finalize_no_consume()?;
+    ///     // you can also pass in a std::fs::File here
+    ///     let audio_data = Toniefile::extract_audio(&mut toniefile.writer())?;
     ///     // do something with the audio data e.g. write it to a file
-    ///     // let mut audio_file = File::create("audio.ogg").unwrap();
-    ///     // audio_file.write_all(&audio_data).unwrap();
-    ///     // audio_file.close().unwrap();
-    ///     assert!(audio_data.starts_with(b"OggS"));
-    /// }
+    ///     // let mut audio_file = File::create("audio.ogg")?;
+    ///     // audio_file.write_all(&audio_data)?;
+    ///     // audio_file.close()?;
+    ///     assert!(audio_data.starts_with(b"OggS")); // Ogg files start with the OggS magic
+    /// #   Ok(())
+    /// # }
     ///
     /// ```
     pub fn extract_audio<R: Read + Seek>(reader: &mut R) -> Result<Vec<u8>, ToniefileError> {
@@ -263,16 +300,24 @@ impl Toniefile<File> {
 
 impl<F: Write + Seek> Toniefile<F> {
     /// Create a new Toniefile with a random number as audio id and no user comments
-    /// ```
-    /// use std::io::Cursor;
-    /// use toniefile::Toniefile;
     ///
-    /// fn create_simple_toniefile() {
+    /// # Errors
+    ///
+    /// Returns an error if the space for comments in the file would overflow. (382 bytes, but
+    /// every comment needs 4 bytes extra for the length indicator)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use std::io::Cursor;
+    /// # use toniefile::Toniefile;
+    /// #
+    /// # fn create_simple_toniefile() {
     ///     let myvec: Vec<u8> = vec![];
     ///     let cursor = Cursor::new(myvec);
     ///     let toniefile = Toniefile::new_simple(cursor);
     ///     assert!(toniefile.is_ok());
-    /// }
+    /// # }
     /// ```
     pub fn new_simple(writer: F) -> Result<Toniefile<F>, ToniefileError> {
         let audio_id = rand::thread_rng().gen::<u32>();
@@ -286,19 +331,24 @@ impl<F: Write + Seek> Toniefile<F> {
     /// - `audio_id` can be any u32 and is used to identify the audio file on the Toniebox
     /// - `user_comments` is a vector of strings that will be written to the Ogg comment page
     ///
+    /// # Errors
+    ///
     /// Returns an error if the space for comments in the file would overflow. (382 bytes, but
     /// every comment needs 4 bytes extra for the length indicator)
     /// returns a Toniefile struct if successful
-    /// ```
-    /// use std::io::Cursor;
-    /// use toniefile::Toniefile;
     ///
-    /// fn create_toniefile() {
+    /// # Example
+    ///
+    /// ```
+    /// # use std::io::Cursor;
+    /// # use toniefile::Toniefile;
+    /// #
+    /// # fn create_toniefile() {
     ///     let myvec: Vec<u8> = vec![];
     ///     let cursor = Cursor::new(myvec);
     ///     let toniefile = Toniefile::new(cursor, 0x12345678, Some(vec!["my comment", "another comment"]));
     ///     assert!(toniefile.is_ok());
-    /// }
+    /// # }
     /// ```
     pub fn new(
         writer: F,
@@ -326,11 +376,11 @@ impl<F: Write + Seek> Toniefile<F> {
             ogg_stream: OggStream::new(audio_id as i32),
             ogg_granulepos: 0,
             ogg_packet_count: 0,
-            header,
-            taf_block_number: 0,
-            sha1: Sha1::new(),
+            taf_header: header,
+            taf_page_number: 0,
+            sha1_ctx: Sha1::new(),
         };
-        let _ = toniefile.new_chapter();
+        toniefile.new_chapter()?;
 
         toniefile.write_header()?;
         toniefile
@@ -407,43 +457,50 @@ impl<F: Write + Seek> Toniefile<F> {
             toniefile.file_position += (og.header.len() + og.body.len()) as u64;
             toniefile.audio_length += (og.header.len() + og.body.len()) as u32;
 
-            toniefile.sha1.update(&og.header);
-            toniefile.sha1.update(&og.body);
+            toniefile.sha1_ctx.update(&og.header);
+            toniefile.sha1_ctx.update(&og.body);
         }
 
         Ok(toniefile)
     }
 
     /// Add a new chapter to the Toniefile's audio data
-    /// ```
-    /// use std::io::{Cursor, Seek, SeekFrom, Write};
-    /// use toniefile::Toniefile;
     ///
-    /// fn make_two_track_toniefile() {
-    ///     let myvec: Vec<u8> = vec![];
-    ///     let cursor = Cursor::new(myvec);
-    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
+    /// # Errors
+    ///
+    /// Returns an error if the maximum number of chapters (100) is exceeded.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use std::io::{Cursor, Seek, SeekFrom, Write};
+    /// # use toniefile::{Toniefile, ToniefileError};
+    /// #
+    /// # fn make_two_track_toniefile() -> Result<(), ToniefileError> {
+    /// #    let myvec: Vec<u8> = vec![];
+    /// #    let cursor = Cursor::new(myvec);
+    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, None)?;
     ///     let samples: Vec<i16> = vec![0; 48000 * 2 * 60]; // 60 seconds of finest silence
     ///     let res = toniefile.encode(&samples);
-    ///     assert!(res.is_ok());
+    /// #    assert!(res.is_ok());
     ///
     ///     let res = toniefile.new_chapter();
     ///     assert!(res.is_ok());
     ///     let res = toniefile.encode(&samples); // encode another 60s of fine silence
     ///     assert!(res.is_ok());
-    ///     toniefile.finalize_no_consume().unwrap();
+    ///     toniefile.finalize_no_consume()?;
     ///
-    ///     let header = Toniefile::parse_header(&mut toniefile.get_writer()).unwrap();
+    ///     let header = Toniefile::parse_header(&mut toniefile.writer())?;
     ///     // the header should now contain two track_page_nums
     ///     assert_eq!(header.track_page_nums.len(), 2);
-    /// }
-    ///
+    /// #   Ok(())
+    /// # }
     /// ```
     pub fn new_chapter(&mut self) -> Result<(), ToniefileError> {
-        if self.header.track_page_nums.len() > TONIEFILE_MAX_CHAPTERS {
+        if self.taf_header.track_page_nums.len() > TONIEFILE_MAX_CHAPTERS {
             return Err(ToniefileError::MaxChaptersReached);
         }
-        self.header.track_page_nums.push(self.taf_block_number);
+        self.taf_header.track_page_nums.push(self.taf_page_number);
         Ok(())
     }
 
@@ -452,21 +509,29 @@ impl<F: Write + Seek> Toniefile<F> {
     /// to the file.
     /// The samples must be interleaved, following the order: left, right, left, right, ...
     /// Additionally, the samples must be 16-bit signed integers.
-    /// ```
-    /// use std::io::{Cursor, Seek, SeekFrom, Write};
-    /// use toniefile::Toniefile;
     ///
-    /// fn fill_vector_toniefile() {
-    ///     let myvec: Vec<u8> = vec![];
-    ///     let cursor = Cursor::new(myvec);
-    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
+    /// # Errors
+    ///
+    /// Returns an error if a misalignment happens during encoding.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use std::io::{Cursor, Seek, SeekFrom, Write};
+    /// # use toniefile::{Toniefile, ToniefileError};
+    /// #
+    /// # fn fill_vector_toniefile() -> Result<(), ToniefileError> {
+    /// #     let myvec: Vec<u8> = vec![];
+    /// #     let cursor = Cursor::new(myvec);
+    ///      let mut toniefile = Toniefile::new(cursor, 0x12345678, None)?;
     ///     let samples: Vec<i16> = vec![0; 48000 * 2 * 60]; // 60 seconds of finest silence
     ///
     ///     let res = toniefile.encode(&samples);
     ///     assert!(res.is_ok());
     ///
-    ///     toniefile.finalize_no_consume().unwrap();
-    /// }
+    /// #    toniefile.finalize_no_consume()?;
+    /// #   Ok(())
+    /// # }
     pub fn encode(&mut self, sample_buf: &[i16]) -> Result<(), ToniefileError> {
         // TODO get rid of samples available, use sample_buf.len()
         const PAGE_HEADER_SIZE: i64 = 27;
@@ -534,10 +599,7 @@ impl<F: Write + Seek> Toniefile<F> {
             let frames =
                 samples_per_frame(&output_frame[..], SampleRate::Hz48000)? * nb_frames as usize;
             if frames != OPUS_FRAME_SIZE {
-                return Err(ToniefileError::FrameSizeDontMatch(
-                    frames,
-                    OPUS_FRAME_SIZE,
-                ));
+                return Err(ToniefileError::FrameSizeDontMatch(frames, OPUS_FRAME_SIZE));
             }
             self.ogg_granulepos += frames as u64;
 
@@ -573,17 +635,15 @@ impl<F: Write + Seek> Toniefile<F> {
                     self.file_position += (og.header.len() + og.body.len()) as u64;
                     self.audio_length += (og.header.len() + og.body.len()) as u32;
 
-                    self.sha1.update(&og.header);
-                    self.sha1.update(&og.body);
+                    self.sha1_ctx.update(&og.header);
+                    self.sha1_ctx.update(&og.body);
 
                     if prev / TONIEFILE_FRAME_SIZE as u64
                         != self.file_position / TONIEFILE_FRAME_SIZE as u64
                     {
-                        self.taf_block_number += 1;
+                        self.taf_page_number += 1;
                         if self.file_position % TONIEFILE_FRAME_SIZE as u64 != 0 {
-                            return Err(ToniefileError::BlockAlignmentError(
-                                self.file_position,
-                            ));
+                            return Err(ToniefileError::BlockAlignmentError(self.file_position));
                         }
                     }
                 }
@@ -597,27 +657,35 @@ impl<F: Write + Seek> Toniefile<F> {
     /// Finalize the Toniefile by computing and writing the SHA-1 hash in the header.
     /// This operation consumes the Toniefile struct and can only be called once.
     /// The Toniefile is dropped, automatically closing any open files.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the SHA-1 hash could not be computed or the header could not be written.
+    ///
+    /// # Example
+    ///
     /// ```
-    /// use std::io::{Cursor, Seek, SeekFrom, Write};
-    /// use toniefile::Toniefile;
-    ///
-    /// fn test_finalize() {
-    ///     let myvec: Vec<u8> = vec![];
-    ///     let cursor = Cursor::new(myvec);
-    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
+    /// # use std::io::{Cursor, Seek, SeekFrom, Write};
+    /// # use toniefile::{Toniefile, ToniefileError};
+    /// #
+    /// # fn test_finalize() -> Result<(), ToniefileError> {
+    /// #     let myvec: Vec<u8> = vec![];
+    /// #     let cursor = Cursor::new(myvec);
+    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, None)?;
     ///     let samples: Vec<i16> = vec![0; 48000 * 2 * 60]; // 60 seconds of finest silence
-    ///
+    /// #
     ///     let res = toniefile.encode(&samples);
-    ///     assert!(res.is_ok());
-    ///
+    /// #    assert!(res.is_ok());
+    /// #
     ///     assert!(toniefile.finalize().is_ok());
     ///     // after finalize() toniefile is dropped
-    /// }
+    /// #   Ok(())
+    /// # }
     /// ```
     pub fn finalize(mut self) -> Result<(), ToniefileError> {
         self.writer.flush()?;
-        self.header.sha1_hash = self.sha1.finalize_fixed_reset().to_vec();
-        self.header.num_bytes = self.audio_length as u64;
+        self.taf_header.sha1_hash = self.sha1_ctx.finalize_fixed_reset().to_vec();
+        self.taf_header.num_bytes = self.audio_length as u64;
 
         self.write_header()?;
 
@@ -629,29 +697,36 @@ impl<F: Write + Seek> Toniefile<F> {
     /// descriptors are not closed.
     /// Use this method when you want to write the Toniefile to a vector, so the
     /// cursor-wrapped vector at `self.writer` can be used later.
-    /// ```
-    /// use std::io::{Cursor, Seek, SeekFrom, Write};
-    /// use toniefile::Toniefile;
     ///
-    /// fn test_finalize_no_consume() {
-    ///     let myvec: Vec<u8> = vec![];
-    ///     let cursor = Cursor::new(myvec);
+    /// # Errors
+    ///
+    /// Returns an error if the SHA-1 hash could not be computed or the header could not be written.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use std::io::{Cursor, Seek, SeekFrom, Write};
+    /// # use toniefile::{Toniefile, ToniefileError};
+    /// #
+    /// # fn test_finalize_no_consume() {
+    /// #     let myvec: Vec<u8> = vec![];
+    /// #     let cursor = Cursor::new(myvec);
     ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
     ///     let samples: Vec<i16> = vec![0; 48000 * 2 * 60]; // 60 seconds of finest silence
-    ///
+    /// #
     ///     let res = toniefile.encode(&samples);
     ///     assert!(res.is_ok());
-    ///
+    /// #
     ///     toniefile.finalize_no_consume().unwrap();
-    ///     let mut new_cursor = toniefile.get_writer();
+    ///     let mut new_cursor = toniefile.writer();
     ///     // finalize_no_consume automatically rewinds the cursor
     ///     assert_eq!(new_cursor.position(), 0);
-    /// }
+    /// # }
     /// ```
     pub fn finalize_no_consume(&mut self) -> Result<(), ToniefileError> {
         self.writer.flush()?;
-        self.header.sha1_hash = self.sha1.finalize_fixed_reset().to_vec();
-        self.header.num_bytes = self.audio_length as u64;
+        self.taf_header.sha1_hash = self.sha1_ctx.finalize_fixed_reset().to_vec();
+        self.taf_header.num_bytes = self.audio_length as u64;
 
         self.write_header()?;
         self.writer.rewind()?;
@@ -662,25 +737,26 @@ impl<F: Write + Seek> Toniefile<F> {
     /// Consume the Toniefile struct and return its writer.
     /// Only call this after calling finalize_no_consume() to retrieve the writer.
     /// ```
-    /// use std::io::{Cursor, Seek, SeekFrom, Write};
-    /// use toniefile::Toniefile;
-    ///
-    /// fn test_get_writer() {
-    ///     let myvec: Vec<u8> = vec![];
-    ///     let cursor = Cursor::new(myvec);
-    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
-    ///     let samples: Vec<i16> = vec![0; 48000 * 2 * 60]; // 60 seconds of finest silence
-    ///
-    ///     let res = toniefile.encode(&samples);
-    ///     assert!(res.is_ok());
-    ///
-    ///     toniefile.finalize_no_consume().unwrap();
-    ///     let mut new_cursor = toniefile.get_writer();
+    /// # use std::io::{Cursor, Seek, SeekFrom, Write};
+    /// # use toniefile::{Toniefile, ToniefileError};
+    /// #
+    /// # fn test_get_writer() -> Result<(), ToniefileError> {
+    /// #     let myvec: Vec<u8> = vec![];
+    /// #     let cursor = Cursor::new(myvec);
+    /// #     let mut toniefile = Toniefile::new(cursor, 0x12345678, None)?;
+    /// #     let samples: Vec<i16> = vec![0; 48000 * 2 * 60]; // 60 seconds of finest silence
+    /// #
+    /// #     let res = toniefile.encode(&samples);
+    /// #     assert!(res.is_ok());
+    /// #
+    ///     toniefile.finalize_no_consume()?;
+    ///     let mut new_cursor = toniefile.writer();
     ///     // finalize_no_consume automatically rewinds the cursor
     ///     assert_eq!(new_cursor.position(), 0);
-    /// }
+    /// #   Ok(())
+    /// # }
     /// ```
-    pub fn get_writer(self) -> F {
+    pub fn writer(self) -> F {
         self.writer
     }
 
@@ -689,19 +765,20 @@ impl<F: Write + Seek> Toniefile<F> {
     /// but note that the header is only updated during new() / new_simple() and  when
     /// finalize() or finalize_no_consume() is called.
     /// ```
-    /// use std::io::{Cursor, Seek, SeekFrom, Write};
-    /// use toniefile::Toniefile;
-    ///
-    /// fn test_get_header() {
-    ///     let myvec: Vec<u8> = vec![];
-    ///     let cursor = Cursor::new(myvec);
-    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, None).unwrap();
-    ///     let header = toniefile.get_header();
+    /// # use std::io::{Cursor, Seek, SeekFrom, Write};
+    /// # use toniefile::{Toniefile, ToniefileError};
+    /// #
+    /// # fn test_get_header() -> Result<(), ToniefileError> {
+    /// #    let myvec: Vec<u8> = vec![];
+    /// #    let cursor = Cursor::new(myvec);
+    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, None)?;
+    ///     let header = toniefile.header();
     ///     assert_eq!(header.audio_id, 0x12345678);
-    /// }
+    /// #   Ok(())
+    /// # }
     /// ```
-    pub fn get_header(&self) -> &TonieboxAudioFileHeader {
-        &self.header
+    pub fn header(&self) -> &TonieboxAudioFileHeader {
+        &self.taf_header
     }
 
     // adds a comment to the ogg comment page. This can only be called during creation
@@ -733,34 +810,34 @@ impl<F: Write + Seek> Toniefile<F> {
     // creates a header of the correct size by filling the fill field of the
     // protobuf
     // writes the header into buf and returns the length of the serialized header
-    fn header(&mut self, buf: &mut Vec<u8>) -> Result<usize, ToniefileError> {
+    fn init_header(&mut self) -> Result<(usize, Vec<u8>), ToniefileError> {
         let proto_frame_size: i16 = TONIEFILE_FRAME_SIZE as i16 - 4;
 
         // only fill the hash at the first time initializing the header
-        if self.header.sha1_hash.is_empty() {
-            self.header.sha1_hash = vec![0xFFu8; SHA1_DIGEST_SIZE];
+        if self.taf_header.sha1_hash.is_empty() {
+            self.taf_header.sha1_hash = vec![0xFFu8; SHA1_DIGEST_SIZE];
         }
-        self.header.fill = vec![];
-        let mut data_length = self.header.encoded_len();
+        self.taf_header.fill = vec![];
+        let mut data_length = self.taf_header.encoded_len();
 
         if data_length < proto_frame_size as usize {
-            self.header.fill = vec![0u8; proto_frame_size as usize - data_length - 1];
+            self.taf_header.fill = vec![0u8; proto_frame_size as usize - data_length - 1];
             // NOTE -1 because byte 0 of fill
         }
-        data_length = self.header.encoded_len();
+        data_length = self.taf_header.encoded_len();
 
-        self.header.encode(buf)?;
+        let mut buf = vec![];
+        self.taf_header.encode(&mut buf)?;
 
         assert_eq!(data_length, proto_frame_size as usize); // TODO remove for lib
-        Ok(data_length)
+        Ok((data_length, buf))
     }
 
     // write header to writer
     fn write_header(&mut self) -> Result<(), ToniefileError> {
-        let mut buffer = vec![];
         let mut len_bf = [0u8; 4];
 
-        let proto_size = self.header(&mut buffer)?;
+        let (proto_size, buffer) = self.init_header()?;
         BigEndian::write_u32(&mut len_bf, proto_size as u32); // TODO can't we inline this?
 
         self.writer.seek(SeekFrom::Start(0))?;
@@ -857,7 +934,7 @@ mod tests {
         let comments = vec!["A"; 74]; // be aware that every comment adds 5 bytes to the header
         let toniefile = Toniefile::new(cursor, 0x12345678, Some(comments));
         assert!(toniefile.is_ok());
-        let mut cursor = toniefile.unwrap().get_writer();
+        let mut cursor = toniefile.unwrap().writer();
         // so length should be written 11 bytes from the end (7 for the padding and 4 for the length itself)
         cursor.seek(SeekFrom::Start(0x1200 - 0xB)).unwrap();
         let buf = &mut [0u8; 1];
@@ -916,7 +993,7 @@ mod tests {
 
         toniefile.finalize_no_consume().unwrap();
 
-        let mut reader = toniefile.get_writer();
+        let mut reader = toniefile.writer();
         reader.seek(SeekFrom::Start(0x1000)).unwrap();
         let mut output_buffer = vec![];
         reader.read_to_end(&mut output_buffer).unwrap();
@@ -981,7 +1058,7 @@ mod tests {
 
         toniefile.finalize_no_consume().unwrap();
 
-        let mut cursor = toniefile.get_writer();
+        let mut cursor = toniefile.writer();
         let header = Toniefile::parse_header(&mut cursor);
         assert!(header.is_ok());
         let header = header.unwrap();

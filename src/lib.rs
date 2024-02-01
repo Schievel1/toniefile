@@ -112,7 +112,7 @@ use prost::Message;
 use rand::Rng;
 use sha1::digest::FixedOutputReset;
 use sha1::{Digest, Sha1};
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 use std::io::{Cursor, Read};
 use std::{
     fs::File,
@@ -165,8 +165,6 @@ pub enum ToniefileError {
     ProstDecodeError(#[from] prost::DecodeError),
     #[error(transparent)]
     Utf8Error(#[from] std::str::Utf8Error),
-    #[error(transparent)]
-    CStringError(#[from] std::ffi::NulError),
 }
 
 pub mod toniehead {
@@ -362,19 +360,17 @@ impl<F: Write + Seek> Toniefile<F> {
         let mut opus_tags: [u8; COMMENT_LEN] = [b'0'; COMMENT_LEN];
         let mut tags_cursor = Cursor::new(&mut opus_tags[..]);
         let _ = tags_cursor.write(b"OpusTags")?;
-        let comment = CString::new(format!("Rust toniefile encoder {}", std::env!("CARGO_PKG_VERSION")))?;
         toniefile.comment_add(
             &mut tags_cursor,
-            &comment,
+            &format!("Rust toniefile encoder {}", std::env!("CARGO_PKG_VERSION")),
         )?;
         // NOTE: use this when audiopus 0.3 is stable
         // let libopusversion = format!("opus {}", audiopus::version()); // this is the libopus version not the audiopus version
-        let libopusversion = unsafe { CStr::from_ptr(ffi::opus_get_version_string()) };
+        let libopusversion = unsafe { CStr::from_ptr(ffi::opus_get_version_string()) }.to_str()?;
         toniefile.comment_add(&mut tags_cursor, libopusversion)?;
         if let Some(user_comments) = user_comments {
             for user_comment in user_comments {
-                let comment = CString::new(user_comment)?;
-                toniefile.comment_add(&mut tags_cursor, &comment)?;
+                toniefile.comment_add(&mut tags_cursor, user_comment)?;
             }
         }
         if (tags_cursor.position() as usize) < COMMENT_LEN {
@@ -713,23 +709,22 @@ impl<F: Write + Seek> Toniefile<F> {
     fn comment_add(
         &mut self,
         cursor: &mut Cursor<&mut [u8]>,
-        comment: &CStr,
+        comment: &str,
     ) -> Result<(), ToniefileError> {
         const LENGTH_LEN: usize = 4; // length of the string length indicator
                                      // need at least 2 * LENGTH_LEN, because we also need to write the length of the padding
-        let comment = comment.to_bytes();
-        let len = comment.len(); // -1 because of the \0
-        if 2 * LENGTH_LEN + len + cursor.position() as usize > COMMENT_LEN {
+        if 2 * LENGTH_LEN + comment.len() + cursor.position() as usize > COMMENT_LEN {
             return Err(ToniefileError::CommentWontFit(
-                len,
+                comment.len(),
                 cursor.position() as usize,
                 COMMENT_LEN,
             ));
         }
+
         let mut len_bf = [0u8; 4];
-        LittleEndian::write_u32(&mut len_bf, len as u32);
+        LittleEndian::write_u32(&mut len_bf, comment.len() as u32);
         let _ = cursor.write(&len_bf)?;
-        let _ = cursor.write(comment)?;
+        let _ = cursor.write(comment.as_bytes())?;
         Ok(())
     }
 

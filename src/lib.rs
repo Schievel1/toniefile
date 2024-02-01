@@ -781,6 +781,101 @@ impl<F: Write + Seek> Toniefile<F> {
         &self.taf_header
     }
 
+    /// Get the current audio length in bytes.
+    /// ```
+    /// # use std::io::{Cursor, Seek, SeekFrom, Write};
+    /// # use toniefile::{Toniefile, ToniefileError};
+    /// #
+    /// # fn test_get_header() -> Result<(), ToniefileError> {
+    /// #    let myvec: Vec<u8> = vec![];
+    /// #    let cursor = Cursor::new(myvec);
+    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, None)?;
+    ///     let audio_length = toniefile.audio_length();
+    ///     // after creation the audio length is 0
+    ///     assert_eq!(audio_length, 0);
+    /// #   Ok(())
+    /// # }
+    /// ```
+    pub fn audio_length(&self) -> u32 {
+        self.audio_length
+    }
+
+    /// Get the current file position in bytes.
+    /// ```
+    /// # use std::io::{Cursor, Seek, SeekFrom, Write};
+    /// # use toniefile::{Toniefile, ToniefileError};
+    /// #
+    /// # fn test_get_header() -> Result<(), ToniefileError> {
+    /// #    let myvec: Vec<u8> = vec![];
+    /// #    let cursor = Cursor::new(myvec);
+    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, None)?;
+    ///     let file_position = toniefile.file_position();
+    ///     // after creation the file position is at the end of the Ogg Opus Comment page
+    ///     assert_eq!(file_position, 0x1200);
+    /// #   Ok(())
+    /// # }
+    /// ```
+    pub fn file_position(&self) -> u64 {
+        self.file_position
+    }
+
+    /// Get the current granule position.
+    /// ```
+    /// # use std::io::{Cursor, Seek, SeekFrom, Write};
+    /// # use toniefile::{Toniefile, ToniefileError};
+    /// #
+    /// # fn test_get_header() -> Result<(), ToniefileError> {
+    /// #    let myvec: Vec<u8> = vec![];
+    /// #    let cursor = Cursor::new(myvec);
+    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, None)?;
+    ///     let granule_position = toniefile.granule_position();
+    ///     // after creation the granule position is 0
+    ///     assert_eq!(granule_position, 0);
+    /// #   Ok(())
+    /// # }
+    /// ```
+    pub fn granule_position(&self) -> u64 {
+        self.ogg_granulepos
+    }
+
+    /// Get the current packet count.
+    /// ```
+    /// # use std::io::{Cursor, Seek, SeekFrom, Write};
+    /// # use toniefile::{Toniefile, ToniefileError};
+    /// #
+    /// # fn test_get_header() -> Result<(), ToniefileError> {
+    /// #    let myvec: Vec<u8> = vec![];
+    /// #    let cursor = Cursor::new(myvec);
+    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, None)?;
+    ///     let packet_count = toniefile.packet_count();
+    ///     // after creation the packet count is 2 (Ogg header and Ogg comment)
+    ///     assert_eq!(packet_count, 2);
+    /// #   Ok(())
+    /// # }
+    /// ```
+    pub fn packet_count(&self) -> i64 {
+        self.ogg_packet_count
+    }
+
+    /// Get the current page number.
+    /// ```
+    /// # use std::io::{Cursor, Seek, SeekFrom, Write};
+    /// # use toniefile::{Toniefile, ToniefileError};
+    /// #
+    /// # fn test_get_header() -> Result<(), ToniefileError> {
+    /// #    let myvec: Vec<u8> = vec![];
+    /// #    let cursor = Cursor::new(myvec);
+    ///     let mut toniefile = Toniefile::new(cursor, 0x12345678, None)?;
+    ///     let page_number = toniefile.page_number();
+    ///     // after creation the page number is 0
+    ///     assert_eq!(page_number, 0);
+    /// #   Ok(())
+    /// # }
+    /// ```
+    pub fn page_number(&self) -> u32 {
+        self.taf_page_number
+    }
+
     // adds a comment to the ogg comment page. This can only be called during creation
     // otherwise it will mess up the lengths
     fn comment_add(

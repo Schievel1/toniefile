@@ -836,7 +836,10 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn just_enough_comments() {
+        // NOTE: This test will fail on some machines because different infos about the environment are put into the headers
+        // therefore a changing environment can cause a different length of the padding.
         let myvec: Vec<u8> = vec![];
         let cursor = Cursor::new(myvec);
         let comments = vec!["A"; 75]; // be aware that every comment adds 5 bytes to the header
@@ -844,7 +847,10 @@ mod tests {
         assert!(toniefile.is_ok());
     }
     #[test]
+    #[ignore]
     fn comment_padding_len() {
+        // NOTE: This test will fail on some machines because different infos about the environment are put into the headers
+        // therefore a changing environment can cause a different length of the padding.
         let myvec: Vec<u8> = vec![];
         let cursor = Cursor::new(myvec);
         // this should result in a padding of 7 bytes
@@ -862,9 +868,11 @@ mod tests {
     #[test]
     #[should_panic]
     fn too_many_comments() {
+        // NOTE: Since the comment buffer is 436 bytes long and a single character comment takes 5 bytes space adding 100 "A"
+        // comments (=500 bytes) will always panic, regardless of the environment and what is in the buffer before adding user comments.
         let myvec: Vec<u8> = vec![];
         let cursor = Cursor::new(myvec);
-        let comments = vec!["A"; 76]; // be aware that every comment adds 5 bytes to the header
+        let comments = vec!["A"; 100]; // be aware that every comment adds 5 bytes to the header
         let toniefile = Toniefile::new(cursor, 0x12345678, Some(comments));
         assert!(toniefile.is_ok());
     }
